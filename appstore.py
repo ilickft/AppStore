@@ -254,35 +254,70 @@ class AppStoreApp(ctk.CTk):
         self._profile_btn.pack(side="left", padx=(2, 4))
 
     def _update_appstore(self):
-        if not tk.messagebox.askyesno("Update", "Update AppStore to the latest version?"):
-            return
+        conf = ctk.CTkToplevel(self)
+        conf.title("Confirm Update")
+        conf.geometry("380x200")
+        conf.configure(fg_color="#0f0f1a")
+        
+        ctk.CTkLabel(conf, text="Update AppStore to the latest version?", 
+                     font=ctk.CTkFont(size=14)).pack(pady=40)
+        
+        btns = ctk.CTkFrame(conf, fg_color="transparent")
+        btns.pack(fill="x", side="bottom", pady=20)
+        
+        def start_upd():
+            conf.destroy()
+            self._do_update_appstore()
             
+        ctk.CTkButton(btns, text="Yes, Update", width=110, height=36, command=start_upd).pack(side="right", padx=15)
+        ctk.CTkButton(btns, text="Cancel", width=90, height=36, fg_color="#333", command=conf.destroy).pack(side="right", padx=5)
+
+    def _do_update_appstore(self):
         win = ctk.CTkToplevel(self)
-        win.title("Updating...")
-        win.geometry("400x350")
+        win.title("Updating AppStore")
+        win.geometry("540x450")
         win.configure(fg_color="#0f0f1a")
         
-        log = ctk.CTkTextbox(win, fg_color="#0a0a14", border_width=0, font=ctk.CTkFont(family="monospace", size=11))
-        log.pack(fill="both", expand=True, padx=10, pady=10)
+        lbl = ctk.CTkLabel(win, text="Updating to latest version...", font=ctk.CTkFont(size=14, weight="bold"))
+        lbl.pack(pady=(15, 5))
         
+        log = ctk.CTkTextbox(win, fg_color="#0a0a14", border_width=1, border_color="#1e1e40", 
+                             font=ctk.CTkFont(family="monospace", size=11))
+        log.pack(fill="both", expand=True, padx=15, pady=10)
+        
+        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=15, pady=(0, 15))
+        
+        close_btn = ctk.CTkButton(btn_frame, text="Close", state="disabled", width=100, command=win.destroy)
+        close_btn.pack(side="right")
+
         def w(txt):
             if win.winfo_exists():
                 self.after(0, lambda: (log.insert("end", txt), log.see("end")))
 
         def run():
             try:
-                w("Cloning latest version...\n")
+                w("Cleaning temporary directory...\n")
                 tmp = os.path.expanduser("~/.appstore_tmp_update")
-                subprocess.run(["rm", "-rf", tmp], check=True)
-                res = subprocess.run(
+                if os.path.exists(tmp):
+                    subprocess.run(["rm", "-rf", tmp], check=True)
+                
+                w("Cloning latest version from GitHub...\n")
+                proc_git = subprocess.Popen(
                     ["git", "clone", "--depth", "1", APPSTORE_REPO_URL, tmp],
-                    capture_output=True, text=True
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
                 )
-                w(res.stdout + res.stderr + "\n")
+                for line in proc_git.stdout:
+                    w(line)
+                proc_git.wait()
+                
+                if proc_git.returncode != 0:
+                    w("\nError: git clone failed.\n")
+                    return
                 
                 script = os.path.join(tmp, "install.sh")
                 if os.path.exists(script):
-                    w("Running install.sh...\n")
+                    w("\nExecuting install.sh...\n")
                     proc = subprocess.Popen(
                         ["bash", "install.sh"], cwd=tmp,
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
@@ -290,15 +325,19 @@ class AppStoreApp(ctk.CTk):
                     for line in proc.stdout:
                         w(line)
                     proc.wait()
+                    
                     if proc.returncode == 0:
-                        w("\nUpdate complete! Please restart.")
-                        self.after(500, lambda: tk.messagebox.showinfo("Update", "AppStore updated! Please restart the app."))
+                        w("\n" + "="*40 + "\nUPDATE SUCCESSFUL!\n" + "="*40 + "\n")
+                        w("Please restart the AppStore to apply changes.\n")
                     else:
-                        w(f"\nFailed (code {proc.returncode})\n")
+                        w(f"\nUpdate script failed with code {proc.returncode}\n")
                 else:
-                    w("Error: install.sh not found.\n")
+                    w("\nError: install.sh not found in the repository.\n")
             except Exception as e:
-                w(f"Error: {e}\n")
+                w(f"\nCritical Error: {e}\n")
+            finally:
+                if win.winfo_exists():
+                    self.after(0, lambda: close_btn.configure(state="normal"))
         
         threading.Thread(target=run, daemon=True).start()
 
@@ -721,7 +760,7 @@ class AppStoreApp(ctk.CTk):
         action_label = "Updating" if is_update else "Installing"
         win = ctk.CTkToplevel(self)
         win.title(f"{action_label} {name}")
-        win.geometry("640x420")
+        win.geometry("640x480")
         win.configure(fg_color="#0f0f1a")
 
         ctk.CTkLabel(
@@ -730,30 +769,44 @@ class AppStoreApp(ctk.CTk):
         ).pack(pady=(18, 8), padx=16, anchor="w")
 
         log = ctk.CTkTextbox(
-            win, height=320,
+            win, height=340,
             font=ctk.CTkFont(size=11, family="monospace"),
-            fg_color="#0b0b1a", text_color="#8a9aaa", border_width=0
+            fg_color="#0b0b1a", text_color="#8a9aaa", border_width=1, border_color="#1e1e40"
         )
-        log.pack(fill="both", padx=12, pady=(0, 14))
+        log.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
+        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=15, pady=(0, 15))
+        
+        close_btn = ctk.CTkButton(btn_frame, text="Close", state="disabled", width=100, command=win.destroy)
+        close_btn.pack(side="right")
 
         def w(msg):
-            self.after(0, lambda m=msg: (log.insert("end", m), log.see("end")))
+            if win.winfo_exists():
+                self.after(0, lambda m=msg: (log.insert("end", m), log.see("end")))
 
         def run():
             try:
+                w(f"Preparing to {action_label.lower()} {name}...\n")
+                if os.path.exists(install_path):
+                    subprocess.run(["rm", "-rf", install_path], check=True)
+                
                 w(f"Cloning {repo_url}...\n")
-                subprocess.run(["rm", "-rf", install_path], check=True)
-                res = subprocess.run(
+                proc_git = subprocess.Popen(
                     ["git", "clone", "--depth", "1", repo_url, install_path],
-                    capture_output=True, text=True
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
                 )
-                w(res.stdout + res.stderr)
-                if res.returncode != 0:
-                    w("Clone failed.\n")
+                for line in proc_git.stdout:
+                    w(line)
+                proc_git.wait()
+                
+                if proc_git.returncode != 0:
+                    w("\nError: git clone failed.\n")
                     return
+                    
                 script = os.path.join(install_path, "install.sh")
                 if os.path.exists(script):
-                    w("Running install.sh...\n")
+                    w("\nExecuting install.sh...\n")
                     proc = subprocess.Popen(
                         ["bash", "install.sh"], cwd=install_path,
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
@@ -763,16 +816,19 @@ class AppStoreApp(ctk.CTk):
                     proc.wait()
                     if proc.returncode == 0:
                         self.db.add(full_name, name, install_path, pushed_at)
-                        w(f"\nInstallation complete!\n")
-                        self.after(800, lambda: self.show_detail(app))
+                        w(f"\nSUCCESS: {name} {action_label.lower()}ed successfully!\n")
+                        self.after(500, lambda: self.show_detail(app))
                     else:
-                        w(f"\nFailed (exit code {proc.returncode})\n")
+                        w(f"\nFAILED: Installation script exited with code {proc.returncode}\n")
                 else:
                     self.db.add(full_name, name, install_path, pushed_at)
-                    w(f"No install.sh found — cloned to:\n{install_path}\n")
-                    self.after(800, lambda: self.show_detail(app))
+                    w(f"\nNotice: No install.sh found. Repo cloned to:\n{install_path}\n")
+                    self.after(500, lambda: self.show_detail(app))
             except Exception as e:
-                w(f"Error: {e}\n")
+                w(f"\nCritical Error: {e}\n")
+            finally:
+                if win.winfo_exists():
+                    self.after(0, lambda: close_btn.configure(state="normal"))
 
         threading.Thread(target=run, daemon=True).start()
 
