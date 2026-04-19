@@ -24,6 +24,62 @@ os.makedirs(os.path.dirname(INSTALL_DB_PATH), exist_ok=True)
 os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
 
 
+def _circle_crop(img, size):
+    img = img.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.paste(img, mask=mask)
+    return out
+
+
+def _placeholder_icon(name, size):
+    palette = ["#1a3a6a", "#2d1a6a", "#1a4a3a", "#4a2d1a", "#3a1a4a", "#1a4a4a", "#4a1a2e"]
+    color = palette[sum(ord(c) for c in (name or "?")) % len(palette)]
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse((0, 0, size - 1, size - 1), fill=color)
+    letter = (name or "?")[0].upper()
+    draw.text((size // 2 - size // 9, size // 2 - size // 7), letter, fill="#ffffff")
+    return img
+
+
+class InstalledDB:
+    def __init__(self):
+        self._db = {}
+        self._load()
+
+    def _load(self):
+        if os.path.exists(INSTALL_DB_PATH):
+            try:
+                with open(INSTALL_DB_PATH) as f:
+                    self._db = json.load(f)
+            except Exception:
+                self._db = {}
+
+    def _save(self):
+        with open(INSTALL_DB_PATH, "w") as f:
+            json.dump(self._db, f, indent=2)
+
+    def is_installed(self, full_name):
+        return full_name in self._db and os.path.isdir(self._db[full_name].get("path", ""))
+
+    def get(self, full_name):
+        return self._db.get(full_name)
+
+    def add(self, full_name, name, path, pushed_at):
+        self._db[full_name] = {"name": name, "path": path, "pushed_at": pushed_at}
+        self._save()
+
+    def remove(self, full_name):
+        self._db.pop(full_name, None)
+        self._save()
+
+    def needs_update(self, full_name, current_pushed_at):
+        entry = self._db.get(full_name)
+        return bool(entry and entry.get("pushed_at", "") < current_pushed_at)
+
+
 class ConfigDB:
     def __init__(self):
         self._path = CONFIG_PATH
