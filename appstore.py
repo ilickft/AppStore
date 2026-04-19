@@ -681,12 +681,21 @@ class AppStoreApp(ctk.CTk):
         if not apps:
             f = ctk.CTkFrame(self.home_view, fg_color="transparent")
             f.pack(expand=True, pady=80)
-            ctk.CTkLabel(f, text="No apps/games available",
-                         text_color="#555", font=ctk.CTkFont(size=17, weight="bold")).pack()
-            ctk.CTkLabel(f, text="There is no app/games available right now.\nYou can add your own public apps by contacting the dev.",
-                         text_color="#444", font=ctk.CTkFont(size=12), justify="center").pack(pady=10)
-            ctk.CTkButton(f, text="↻  Retry", width=90, height=32,
-                          command=self.show_home).pack(pady=12)
+            
+            if self.current_category == "Installed":
+                ctk.CTkLabel(f, text="Your library is empty",
+                             text_color="#555", font=ctk.CTkFont(size=17, weight="bold")).pack()
+                ctk.CTkLabel(f, text="You don't have any installed apps yet.",
+                             text_color="#444", font=ctk.CTkFont(size=12), justify="center").pack(pady=10)
+                ctk.CTkButton(f, text="Browse Apps", width=120, height=32,
+                              command=lambda: self._set_category("Apps")).pack(pady=12)
+            else:
+                ctk.CTkLabel(f, text="No apps/games available",
+                             text_color="#555", font=ctk.CTkFont(size=17, weight="bold")).pack()
+                ctk.CTkLabel(f, text="There is no app/games available right now.\nYou can add your own public apps by contacting the dev.",
+                             text_color="#444", font=ctk.CTkFont(size=12), justify="center").pack(pady=10)
+                ctk.CTkButton(f, text="↻  Retry", width=90, height=32,
+                              command=self.show_home).pack(pady=12)
             return
 
         COLS = 5
@@ -912,7 +921,8 @@ class AppStoreApp(ctk.CTk):
         self._install_progress.pack(fill="x", pady=(2, 10))
         self._install_progress.set(0)
 
-        ctk.CTkFrame(self.detail_view, height=1, fg_color="#1e1e40").pack(fill="x", padx=16, pady=14)
+        self._ss_sep_top = ctk.CTkFrame(self.detail_view, height=1, fg_color="#1e1e40")
+        self._ss_sep_top.pack(fill="x", padx=16, pady=14)
 
         self._screenshots_outer = ctk.CTkFrame(self.detail_view, fg_color="transparent")
         self._screenshots_outer.pack(fill="x", padx=16)
@@ -921,11 +931,13 @@ class AppStoreApp(ctk.CTk):
             text_color="#3a3a5a", font=ctk.CTkFont(size=11)
         )
         self._ss_loading_lbl.pack(anchor="w", pady=2)
-        threading.Thread(
-            target=self._load_screenshots, args=(full_name,), daemon=True
-        ).start()
+        
+        self._ss_sep_bottom = ctk.CTkFrame(self.detail_view, height=1, fg_color="#1e1e40")
+        self._ss_sep_bottom.pack(fill="x", padx=16, pady=(16, 0))
 
-        ctk.CTkFrame(self.detail_view, height=1, fg_color="#1e1e40").pack(fill="x", padx=16, pady=(16, 0))
+        threading.Thread(
+            target=self._load_screenshots, args=(app,), daemon=True
+        ).start()
 
         self._about_btn = ctk.CTkButton(
             self.detail_view,
@@ -939,6 +951,31 @@ class AppStoreApp(ctk.CTk):
         self._about_btn.pack(fill="x", padx=4)
 
         self._readme_frame = ctk.CTkFrame(self.detail_view, fg_color="#0b0b1a", corner_radius=10)
+
+        # Reviews Section
+        self._reviews_outer = ctk.CTkFrame(self.detail_view, fg_color="transparent")
+        self._reviews_outer.pack(fill="x", padx=16, pady=(16, 20))
+        
+        ctk.CTkLabel(self._reviews_outer, text="Reviews", 
+                     font=ctk.CTkFont(size=16, weight="bold"), text_color="#e8eaed").pack(anchor="w", pady=(0, 10))
+        
+        self._reviews_list = ctk.CTkFrame(self._reviews_outer, fg_color="transparent")
+        self._reviews_list.pack(fill="x")
+        
+        self._reviews_loading = ctk.CTkLabel(self._reviews_list, text="Loading reviews...", 
+                                              text_color="#3a3a5a", font=ctk.CTkFont(size=11))
+        self._reviews_loading.pack(pady=10)
+        
+        self._write_review_btn = ctk.CTkButton(
+            self._reviews_outer, text="✎ Write a Review", 
+            width=140, height=34, corner_radius=17,
+            fg_color="#1e1e40", hover_color="#2a2a50", text_color="#7eb3ff",
+            font=ctk.CTkFont(size=12),
+            command=lambda: self._show_write_review_dialog(app)
+        )
+        self._write_review_btn.pack(anchor="w", pady=(10, 0))
+
+        threading.Thread(target=self._load_reviews, args=(app,), daemon=True).start()
 
         ctk.CTkFrame(self.detail_view, height=30, fg_color="transparent").pack()
 
@@ -975,15 +1012,53 @@ class AppStoreApp(ctk.CTk):
         except Exception:
             pass
 
-    def _load_screenshots(self, full_name):
-        images = self.api.get_readme_images(full_name)
-        self.after(0, lambda: self._render_screenshots(images))
+    def _load_screenshots(self, app):
+        full_name = app.get("full_name", "")
+        name = app.get("name", "")
+        repo_name = app.get("repo_name", "")
+        owner = app.get("owner", {}).get("login", "")
+        subdir = app.get("subdir", "")
+        
+        # 1. Check README
+        urls = self.api.get_readme_images(full_name)
+        
+        # 2. Check local if installed
+        install_path = os.path.join(INSTALL_BASE, name)
+        if not urls and os.path.exists(install_path):
+            local_urls = []
+            for f in os.listdir(install_path):
+                if f.lower().startswith("screenshot") and f.lower().endswith((".png", ".jpg", ".jpeg")):
+                    local_urls.append(os.path.join(install_path, f))
+            urls = local_urls
+            
+        # 3. Check GitHub contents
+        if not urls and ":" in full_name:
+            repo, _ = full_name.split(":", 1)
+            try:
+                r = requests.get(f"{GITHUB_API_BASE}/repos/{repo}/contents/{subdir}", 
+                                 headers=self.api.headers, timeout=5)
+                if r.status_code == 200:
+                    for item in r.json():
+                        fname = item.get("name", "").lower()
+                        if fname.startswith("screenshot") and fname.endswith((".png", ".jpg", ".jpeg")):
+                            urls.append(item.get("download_url"))
+            except:
+                pass
+
+        self.after(0, lambda: self._render_screenshots(urls))
 
     def _render_screenshots(self, urls):
         if self._ss_loading_lbl.winfo_exists():
             self._ss_loading_lbl.destroy()
         if not urls:
+            if self._screenshots_outer.winfo_exists():
+                self._screenshots_outer.pack_forget()
+            if self._ss_sep_top.winfo_exists():
+                self._ss_sep_top.pack_forget()
+            if self._ss_sep_bottom.winfo_exists():
+                self._ss_sep_bottom.pack_forget()
             return
+            
         scroll = ctk.CTkScrollableFrame(
             self._screenshots_outer, height=210,
             orientation="horizontal", fg_color="transparent"
@@ -996,8 +1071,11 @@ class AppStoreApp(ctk.CTk):
 
     def _load_one_screenshot(self, parent, url):
         try:
-            r = requests.get(url, timeout=10)
-            img = Image.open(BytesIO(r.content))
+            if url.startswith("http"):
+                r = requests.get(url, timeout=10)
+                img = Image.open(BytesIO(r.content))
+            else:
+                img = Image.open(url)
             h = 190
             w = int(img.width * h / img.height)
             img = img.resize((w, h), Image.Resampling.LANCZOS)
@@ -1013,6 +1091,140 @@ class AppStoreApp(ctk.CTk):
         frame = ctk.CTkFrame(parent, fg_color="#1a1a2e", corner_radius=10)
         frame.pack(side="left", padx=4)
         ctk.CTkLabel(frame, image=ctk_img, text="", corner_radius=10).pack(padx=4, pady=4)
+
+    def _load_reviews(self, app):
+        full_name = app.get("full_name", "")
+        name = app.get("name", "")
+        repo = full_name.split(":")[0] if ":" in full_name else full_name
+        
+        url = f"{GITHUB_API_BASE}/repos/{repo}/issues?state=all&per_page=100"
+        reviews = []
+        try:
+            r = requests.get(url, headers=self.api.headers, timeout=10)
+            if r.status_code == 200:
+                for issue in r.json():
+                    if issue.get("title") == name:
+                        body = issue.get("body", "")
+                        rating_match = re.search(r"Ratings:\s*([1-5])", body, re.IGNORECASE)
+                        comment_match = re.search(r"Comment:\s*(.*)", body, re.IGNORECASE | re.DOTALL)
+                        user_match = re.search(r"User:\s*(.*)", body, re.IGNORECASE)
+                        
+                        rating = rating_match.group(1) if rating_match else "0"
+                        comment = comment_match.group(1).strip() if comment_match else body.strip()
+                        user = user_match.group(1).strip() if user_match else issue.get("user", {}).get("login", "Unknown")
+                        
+                        reviews.append({
+                            "user": user,
+                            "rating": int(rating),
+                            "comment": comment,
+                            "avatar": issue.get("user", {}).get("avatar_url", "")
+                        })
+        except:
+            pass
+        self.after(0, lambda: self._render_reviews(reviews))
+
+    def _render_reviews(self, reviews):
+        if not self.detail_view.winfo_exists():
+            return
+        if self._reviews_loading.winfo_exists():
+            self._reviews_loading.destroy()
+            
+        for w in self._reviews_list.winfo_children():
+            w.destroy()
+            
+        if not reviews:
+            ctk.CTkLabel(self._reviews_list, text="No reviews yet. Be the first to review!", 
+                         text_color="#555", font=ctk.CTkFont(size=12, slant="italic")).pack(pady=10)
+            return
+            
+        for rev in reviews:
+            card = ctk.CTkFrame(self._reviews_list, fg_color="#12122a", corner_radius=8)
+            card.pack(fill="x", pady=5)
+            
+            top = ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=10, pady=(10, 5))
+            
+            ctk.CTkLabel(top, text=rev["user"], font=ctk.CTkFont(size=13, weight="bold"), text_color="#e8eaed").pack(side="left")
+            
+            stars_text = "★" * rev["rating"] + "☆" * (5 - rev["rating"])
+            ctk.CTkLabel(top, text=stars_text, font=ctk.CTkFont(size=14), text_color="#ffb400").pack(side="right")
+            
+            ctk.CTkLabel(card, text=rev["comment"], font=ctk.CTkFont(size=12), text_color="#9aa0a6", 
+                         justify="left", wraplength=480).pack(fill="x", padx=10, pady=(0, 10))
+
+    def _show_write_review_dialog(self, app):
+        if not self.api.token:
+            tk.messagebox.showwarning("Login Required", "You must be logged in to post a review.")
+            self._login()
+            return
+            
+        win = ctk.CTkToplevel(self)
+        win.title("Write a Review")
+        win.geometry("400x380")
+        win.configure(fg_color="#0f0f1a")
+        win.transient(self)
+        
+        ctk.CTkLabel(win, text=f"Review {app.get('name')}", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 10))
+        
+        rating_frame = ctk.CTkFrame(win, fg_color="transparent")
+        rating_frame.pack(pady=10)
+        
+        self._selected_rating = 5
+        stars_btns = []
+        def set_rating(r):
+            self._selected_rating = r
+            for i, btn in enumerate(stars_btns):
+                btn.configure(text="★" if i < r else "☆", text_color="#ffb400" if i < r else "#555")
+                
+        for i in range(1, 6):
+            b = ctk.CTkButton(rating_frame, text="★", width=30, height=30, fg_color="transparent", 
+                              hover_color="#1a1a30", font=ctk.CTkFont(size=24), text_color="#ffb400",
+                              command=lambda idx=i: set_rating(idx))
+            b.pack(side="left", padx=2)
+            stars_btns.append(b)
+            
+        comment_box = ctk.CTkTextbox(win, height=120, fg_color="#1a1a30", border_color="#2a2a50", border_width=1)
+        comment_box.pack(fill="x", padx=20, pady=10)
+        
+        def submit():
+            comment = comment_box.get("1.0", "end").strip()
+            if not comment:
+                tk.messagebox.showwarning("Error", "Please write a comment.")
+                return
+                
+            sub_btn.configure(state="disabled", text="Submitting...")
+            def run():
+                success = self._post_review(app, self._selected_rating, comment)
+                if success:
+                    self.after(0, lambda: (
+                        tk.messagebox.showinfo("Success", "Review posted successfully!"),
+                        win.destroy(),
+                        self._load_reviews(app)
+                    ))
+                else:
+                    self.after(0, lambda: (
+                        tk.messagebox.showerror("Error", "Failed to post review."),
+                        sub_btn.configure(state="normal", text="Submit Review")
+                    ))
+            threading.Thread(target=run, daemon=True).start()
+            
+        sub_btn = ctk.CTkButton(win, text="Submit Review", command=submit)
+        sub_btn.pack(pady=20)
+
+    def _post_review(self, app, rating, comment):
+        full_name = app.get("full_name", "")
+        name = app.get("name", "")
+        repo = full_name.split(":")[0] if ":" in full_name else full_name
+        username = self.config_db.get_username() or "User"
+        
+        url = f"{GITHUB_API_BASE}/repos/{repo}/issues"
+        body = f"User: {username}\nRatings: {rating}\nComment: {comment}"
+        payload = {"title": name, "body": body}
+        try:
+            r = requests.post(url, headers=self.api.headers, json=payload, timeout=10)
+            return r.status_code == 201
+        except:
+            return False
 
     def _toggle_readme(self, app):
         if self._detail_readme_visible:
