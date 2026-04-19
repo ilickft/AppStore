@@ -14,7 +14,7 @@ pkg install -y python python-tkinter p7zip xdg-utils git
 
 # 2. Install Python Dependencies
 echo "Installing python dependencies..."
-pip install customtkinter requests pillow pystray
+pip install customtkinter requests pillow pystray python-xlib
 
 # 3. Setup Application Directory
 APP_DIR="/data/data/com.termux/files/home/.local/share/termux-appstore"
