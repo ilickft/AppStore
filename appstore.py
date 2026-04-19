@@ -8,6 +8,8 @@ import re
 import os
 import json
 import subprocess
+import pystray
+from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 from io import BytesIO
 
