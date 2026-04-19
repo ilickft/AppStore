@@ -11,7 +11,7 @@ import subprocess
 from PIL import Image, ImageDraw
 from io import BytesIO
 
-SEARCH_QUERY = "topic:termux-appstore-ready+OR+topic:termux-desktop+OR+topic:termux-x11"
+SEARCH_QUERY = "termux+desktop+OR+termux+gui+OR+termux+x11+OR+topic:termux-desktop+OR+topic:termux-x11"
 GITHUB_API_BASE = "https://api.github.com"
 CLIENT_ID = "Iv1.b08f870e6c6c180a"
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
@@ -115,16 +115,19 @@ class GitHubAPI:
             if d:
                 apps.append(d)
                 seen.add(d["full_name"])
-        url = f"{GITHUB_API_BASE}/search/repositories?q={query}&per_page=50&sort=stars&order=desc"
+        url = f"{GITHUB_API_BASE}/search/repositories?q={query}&per_page=60&sort=updated"
         try:
-            r = requests.get(url, headers=self.headers, timeout=10)
+            r = requests.get(url, headers=self.headers, timeout=12)
             if r.status_code == 200:
-                for item in r.json().get("items", []):
+                items = r.json().get("items", [])
+                for item in items:
                     if item["full_name"] not in seen:
                         apps.append(item)
                         seen.add(item["full_name"])
             elif r.status_code == 403:
-                print("GitHub API rate limit — login for higher quota")
+                print("GitHub API rate limit exceeded. Login for a higher quota.")
+            else:
+                print(f"GitHub Search API returned status: {r.status_code}")
         except Exception as e:
             print(f"Search error: {e}")
         return apps
@@ -295,6 +298,7 @@ class AppStoreApp(ctk.CTk):
             self._render_home(filtered)
 
     def show_home(self):
+        self.title("Home - AppStore")
         self.detail_view.grid_forget()
         self.home_view.grid(row=0, column=0, sticky="nsew")
         for w in self.home_view.winfo_children():
@@ -392,6 +396,8 @@ class AppStoreApp(ctk.CTk):
             lbl.configure(image=ctk_img)
 
     def show_detail(self, app):
+        name = app.get("name", "App")
+        self.title(f"{name} - AppStore")
         self.home_view.grid_forget()
         self.detail_view.grid(row=0, column=0, sticky="nsew")
         for w in self.detail_view.winfo_children():
