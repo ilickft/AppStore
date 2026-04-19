@@ -15,6 +15,7 @@ SEARCH_QUERY = "termux+desktop+OR+termux+gui+OR+termux+x11+OR+topic:termux-deskt
 GITHUB_API_BASE = "https://api.github.com"
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
 APPSTORE_REPO_URL = "https://github.com/ilickft/AppStore/"
+APPSTORE_VERSION = "1.1.0"
 INSTALL_BASE = os.path.expanduser("~/.appstore/apps")
 INSTALL_DB_PATH = os.path.expanduser("~/.appstore/installed.json")
 CONFIG_PATH = os.path.expanduser("~/.config/appstore/config.json")
@@ -169,35 +170,46 @@ class GitHubAPI:
         return self.verified_repos
 
     def is_verified(self, full_name):
+        if full_name.startswith("App-Store-tmx/"):
+            return True
         return full_name in self.verified_repos
 
-    def search_apps(self, query=SEARCH_QUERY):
+    def search_apps(self, query=""):
         apps = []
-        seen = set()
+        repos = ["App-Store-tmx/Games", "App-Store-tmx/Apps"]
         
-        # 1. Fetch from the verified list
-        for repo_name in list(self.verified_repos):
-            d = self._get_repo(repo_name)
-            if d:
-                apps.append(d)
-                seen.add(d["full_name"])
-        
-        # 2. Browse GitHub
-        url = f"{GITHUB_API_BASE}/search/repositories?q={query}&per_page=60&sort=updated"
-        try:
-            r = requests.get(url, headers=self.headers, timeout=12)
-            if r.status_code == 200:
-                items = r.json().get("items", [])
-                for item in items:
-                    if item["full_name"] not in seen:
-                        apps.append(item)
-                        seen.add(item["full_name"])
-            elif r.status_code == 403:
-                print("GitHub API rate limit exceeded. Login for a higher quota.")
-            else:
-                print(f"GitHub Search API returned status: {r.status_code}")
-        except Exception as e:
-            print(f"Search error: {e}")
+        for repo_full_name in repos:
+            url = f"{GITHUB_API_BASE}/repos/{repo_full_name}/contents"
+            try:
+                r = requests.get(url, headers=self.headers, timeout=12)
+                if r.status_code == 200:
+                    items = r.json()
+                    for item in items:
+                        if item.get("type") == "dir":
+                            if item["name"].startswith("."):
+                                continue
+                            category = "Games" if "Games" in repo_full_name else "Apps"
+                            app = {
+                                "full_name": f"{repo_full_name}:{item['name']}",
+                                "name": item["name"],
+                                "description": f"An app from the {category} store.",
+                                "stargazers_count": 0,
+                                "forks_count": 0,
+                                "language": "Bash",
+                                "pushed_at": "",
+                                "html_url": f"https://github.com/{repo_full_name}",
+                                "owner": {"login": repo_full_name.split('/')[0], "avatar_url": ""},
+                                "subdir": item["name"],
+                                "repo_name": repo_full_name.split('/')[1],
+                                "category": category
+                            }
+                            apps.append(app)
+                elif r.status_code == 403:
+                    print(f"GitHub API rate limit exceeded for {repo_full_name}.")
+                else:
+                    print(f"GitHub API returned status: {r.status_code} for {repo_full_name}")
+            except Exception as e:
+                print(f"Search error for {repo_full_name}: {e}")
         return apps
 
     def _get_repo(self, full_name):
@@ -211,7 +223,12 @@ class GitHubAPI:
 
     def get_readme(self, full_name):
         try:
-            r = requests.get(f"{GITHUB_API_BASE}/repos/{full_name}/readme", headers=self.headers, timeout=5)
+            if ":" in full_name:
+                repo, subdir = full_name.split(":", 1)
+                url = f"{GITHUB_API_BASE}/repos/{repo}/readme/{subdir}"
+            else:
+                url = f"{GITHUB_API_BASE}/repos/{full_name}/readme"
+            r = requests.get(url, headers=self.headers, timeout=5)
             if r.status_code == 200:
                 dl = r.json().get("download_url")
                 if dl:
@@ -292,12 +309,22 @@ class AppStoreApp(ctk.CTk):
         self._readme_loaded = False
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
+        self.current_category = "Apps"
         self._build_header()
+        self._build_tabs()
         self._build_search_row()
         self._build_body()
         self.show_home()
+        threading.Thread(target=self._check_updates_silent, daemon=True).start()
+
+    def _check_updates_silent(self):
+        remote_v = self.api.check_appstore_update()
+        if remote_v and remote_v != APPSTORE_VERSION:
+            self.after(0, lambda: self._update_btn.configure(text="⤒ ●", text_color="#ff9800"))
+        elif remote_v == APPSTORE_VERSION:
+            self.after(0, lambda: self._update_btn.configure(text="⤒ ●", text_color="#34a853"))
 
     def _build_header(self):
         hdr = ctk.CTkFrame(self, height=52, corner_radius=0, fg_color="#12122a")
@@ -318,13 +345,42 @@ class AppStoreApp(ctk.CTk):
                     fg_color="transparent", hover_color="#1e1e40",
                     font=ctk.CTkFont(size=19))
 
-        ctk.CTkButton(icons_frame, text="⤒", command=self._update_appstore, **ibtn).pack(side="left", padx=2)
+        self._update_btn = ctk.CTkButton(icons_frame, text="⤒", command=self._update_appstore, **ibtn)
+        self._update_btn.pack(side="left", padx=2)
         ctk.CTkButton(icons_frame, text="⌂", command=self.show_home, **ibtn).pack(side="left", padx=2)
         ctk.CTkButton(icons_frame, text="⌕", command=self._toggle_search, **ibtn).pack(side="left", padx=2)
         self._profile_btn = ctk.CTkButton(
             icons_frame, text="◉", command=self._login, **ibtn
         )
         self._profile_btn.pack(side="left", padx=(2, 4))
+
+    def _build_tabs(self):
+        self._tabs_row = ctk.CTkFrame(self, height=40, corner_radius=0, fg_color="#0f0f1a")
+        self._tabs_row.grid(row=1, column=0, sticky="ew")
+        
+        self._apps_tab = ctk.CTkButton(
+            self._tabs_row, text="Apps", width=80, height=30, corner_radius=15,
+            fg_color="#1a73e8", text_color="#ffffff", font=ctk.CTkFont(size=13, weight="bold"),
+            command=lambda: self._set_category("Apps")
+        )
+        self._apps_tab.pack(side="left", padx=(20, 10), pady=5)
+        
+        self._games_tab = ctk.CTkButton(
+            self._tabs_row, text="Games", width=80, height=30, corner_radius=15,
+            fg_color="transparent", text_color="#9aa0a6", font=ctk.CTkFont(size=13),
+            command=lambda: self._set_category("Games")
+        )
+        self._games_tab.pack(side="left", padx=10, pady=5)
+
+    def _set_category(self, cat):
+        self.current_category = cat
+        if cat == "Apps":
+            self._apps_tab.configure(fg_color="#1a73e8", text_color="#ffffff", font=ctk.CTkFont(size=13, weight="bold"))
+            self._games_tab.configure(fg_color="transparent", text_color="#9aa0a6", font=ctk.CTkFont(size=13))
+        else:
+            self._games_tab.configure(fg_color="#1a73e8", text_color="#ffffff", font=ctk.CTkFont(size=13, weight="bold"))
+            self._apps_tab.configure(fg_color="transparent", text_color="#9aa0a6", font=ctk.CTkFont(size=13))
+        self._apply_filter()
 
     def _update_appstore(self):
         conf = ctk.CTkToplevel(self)
@@ -450,18 +506,20 @@ class AppStoreApp(ctk.CTk):
             self.after_cancel(self._search_after)
         self._search_after = self.after(280, self._apply_filter)
 
-    def _apply_filter(self):
+    def _apply_filter(self, _=None):
         q = self._search_entry.get().strip().lower()
-        if not q:
-            self._render_home(self.loaded_apps)
-        else:
+        
+        # Filter by category first
+        filtered = [a for a in self.loaded_apps if a.get("category") == self.current_category]
+        
+        # Then filter by query
+        if q:
             filtered = [
-                a for a in self.loaded_apps
+                a for a in filtered
                 if q in a.get("name", "").lower()
                 or q in (a.get("description") or "").lower()
-                or any(q in t.lower() for t in (a.get("topics") or []))
             ]
-            self._render_home(filtered)
+        self._render_home(filtered)
 
     def show_home(self):
         self.title("Home - AppStore")
@@ -483,7 +541,7 @@ class AppStoreApp(ctk.CTk):
         self.api.fetch_verified_repos()
         apps = self.api.search_apps()
         self.loaded_apps = apps
-        self.after(0, lambda: self._render_home(apps))
+        self.after(0, lambda: self._apply_filter())
 
     def _render_home(self, apps):
         for w in self.home_view.winfo_children():
@@ -493,10 +551,10 @@ class AppStoreApp(ctk.CTk):
         if not apps:
             f = ctk.CTkFrame(self.home_view, fg_color="transparent")
             f.pack(expand=True, pady=80)
-            ctk.CTkLabel(f, text="No apps found",
+            ctk.CTkLabel(f, text="No apps/games available",
                          text_color="#555", font=ctk.CTkFont(size=17, weight="bold")).pack()
-            ctk.CTkLabel(f, text="GitHub API may be rate-limited — login for more results.",
-                         text_color="#444", font=ctk.CTkFont(size=11)).pack(pady=4)
+            ctk.CTkLabel(f, text="There is no app/games available right now.\nYou can add your own public apps by contacting the dev.",
+                         text_color="#444", font=ctk.CTkFont(size=12), justify="center").pack(pady=10)
             ctk.CTkButton(f, text="↻  Retry", width=90, height=32,
                           command=self.show_home).pack(pady=12)
             return
@@ -827,6 +885,7 @@ class AppStoreApp(ctk.CTk):
         full_name = app.get("full_name", "")
         name = app.get("name", "")
         repo_url = app.get("html_url", "")
+        subdir = app.get("subdir", "")
         pushed_at = app.get("pushed_at", "")
         install_path = os.path.join(INSTALL_BASE, name)
 
@@ -864,9 +923,25 @@ class AppStoreApp(ctk.CTk):
                 if os.path.exists(install_path):
                     subprocess.run(["rm", "-rf", install_path], check=True)
                 
-                w(f"Cloning {repo_url}...\n")
+                tmp_dir = os.path.expanduser(f"~/.appstore_tmp_{name}")
+                if os.path.exists(tmp_dir):
+                    subprocess.run(["rm", "-rf", tmp_dir])
+                os.makedirs(tmp_dir)
+                
+                w(f"Fetching {name} from repository...\n")
+                
+                # Sparse checkout routine
+                subprocess.run(
+                    ["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none", repo_url, tmp_dir],
+                    check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                )
+                subprocess.run(
+                    ["git", "sparse-checkout", "set", subdir],
+                    cwd=tmp_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                )
+                
                 proc_git = subprocess.Popen(
-                    ["git", "clone", "--depth", "1", repo_url, install_path],
+                    ["git", "checkout"], cwd=tmp_dir,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
                 )
                 for line in proc_git.stdout:
@@ -874,8 +949,17 @@ class AppStoreApp(ctk.CTk):
                 proc_git.wait()
                 
                 if proc_git.returncode != 0:
-                    w("\nError: git clone failed.\n")
+                    w("\nError: Checkout failed.\n")
                     return
+                
+                src = os.path.join(tmp_dir, subdir)
+                if not os.path.exists(src):
+                    w(f"\nError: Subdirectory {subdir} not found.\n")
+                    return
+                
+                w(f"Moving files to {install_path}...\n")
+                subprocess.run(["mv", src, install_path], check=True)
+                subprocess.run(["rm", "-rf", tmp_dir])
                     
                 script = os.path.join(install_path, "install.sh")
                 if os.path.exists(script):
@@ -895,7 +979,7 @@ class AppStoreApp(ctk.CTk):
                         w(f"\nFAILED: Installation script exited with code {proc.returncode}\n")
                 else:
                     self.db.add(full_name, name, install_path, pushed_at)
-                    w(f"\nNotice: No install.sh found. Repo cloned to:\n{install_path}\n")
+                    w(f"\nNotice: No install.sh found. App installed to:\n{install_path}\n")
                     self.after(500, lambda: self.show_detail(app))
             except Exception as e:
                 w(f"\nCritical Error: {e}\n")
