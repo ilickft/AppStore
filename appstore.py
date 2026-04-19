@@ -1275,24 +1275,25 @@ class AppStoreApp(ctk.CTk):
         except:
             pass
 
-    def _show_write_review_dialog(self, app):
+    def _show_write_review_dialog(self, app, edit_rev=None):
         if not self.api.token:
             tk.messagebox.showwarning("Login Required", "You must be logged in to post a review.")
             self._login()
             return
             
         win = ctk.CTkToplevel(self)
-        win.title("Write a Review")
+        title_text = "Edit Review" if edit_rev else "Write a Review"
+        win.title(title_text)
         win.geometry("400x380")
         win.configure(fg_color="#0f0f1a")
         win.transient(self)
         
-        ctk.CTkLabel(win, text=f"Review {app.get('name')}", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 10))
+        ctk.CTkLabel(win, text=f"{title_text} for {app.get('name')}", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 10))
         
         rating_frame = ctk.CTkFrame(win, fg_color="transparent")
         rating_frame.pack(pady=10)
         
-        self._selected_rating = 5
+        self._selected_rating = edit_rev["rating"] if edit_rev else 5
         stars_btns = []
         def set_rating(r):
             self._selected_rating = r
@@ -1305,9 +1306,13 @@ class AppStoreApp(ctk.CTk):
                               command=lambda idx=i: set_rating(idx))
             b.pack(side="left", padx=2)
             stars_btns.append(b)
+        
+        set_rating(self._selected_rating)
             
         comment_box = ctk.CTkTextbox(win, height=120, fg_color="#1a1a30", border_color="#2a2a50", border_width=1)
         comment_box.pack(fill="x", padx=20, pady=10)
+        if edit_rev:
+            comment_box.insert("1.0", edit_rev["comment"])
         
         def submit():
             comment = comment_box.get("1.0", "end").strip()
@@ -1315,37 +1320,43 @@ class AppStoreApp(ctk.CTk):
                 tk.messagebox.showwarning("Error", "Please write a comment.")
                 return
                 
-            sub_btn.configure(state="disabled", text="Submitting...")
+            sub_btn.configure(state="disabled", text="Saving..." if edit_rev else "Submitting...")
             def run():
-                success = self._post_review(app, self._selected_rating, comment)
+                success = self._post_review(app, self._selected_rating, comment, edit_id=edit_rev["id"] if edit_rev else None)
                 if success:
                     self.after(0, lambda: (
-                        tk.messagebox.showinfo("Success", "Review posted successfully!"),
+                        tk.messagebox.showinfo("Success", "Review saved successfully!"),
                         win.destroy(),
                         self._load_reviews(app)
                     ))
                 else:
                     self.after(0, lambda: (
-                        tk.messagebox.showerror("Error", "Failed to post review."),
+                        tk.messagebox.showerror("Error", "Failed to save review."),
                         sub_btn.configure(state="normal", text="Submit Review")
                     ))
             threading.Thread(target=run, daemon=True).start()
             
-        sub_btn = ctk.CTkButton(win, text="Submit Review", command=submit)
+        sub_btn = ctk.CTkButton(win, text="Save Review" if edit_rev else "Submit Review", command=submit)
         sub_btn.pack(pady=20)
 
-    def _post_review(self, app, rating, comment):
+    def _post_review(self, app, rating, comment, edit_id=None):
         full_name = app.get("full_name", "")
         name = app.get("name", "")
         repo = full_name.split(":")[0] if ":" in full_name else full_name
         username = self.config_db.get_username() or "User"
+        display_name = self.config_db.get_display_name()
         
-        url = f"{GITHUB_API_BASE}/repos/{repo}/issues"
-        body = f"User: {username}\nRatings: {rating}\nComment: {comment}"
+        body = f"User: {display_name}\nRatings: {rating}\nComment: {comment}"
         payload = {"title": name, "body": body}
         try:
-            r = requests.post(url, headers=self.api.headers, json=payload, timeout=10)
-            return r.status_code == 201
+            if edit_id:
+                url = f"{GITHUB_API_BASE}/repos/{repo}/issues/{edit_id}"
+                r = requests.patch(url, headers=self.api.headers, json=payload, timeout=10)
+                return r.status_code == 200
+            else:
+                url = f"{GITHUB_API_BASE}/repos/{repo}/issues"
+                r = requests.post(url, headers=self.api.headers, json=payload, timeout=10)
+                return r.status_code == 201
         except:
             return False
 
