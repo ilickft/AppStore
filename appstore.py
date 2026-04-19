@@ -259,43 +259,46 @@ class AppStoreApp(ctk.CTk):
             
         win = ctk.CTkToplevel(self)
         win.title("Updating...")
-        win.geometry("400x300")
+        win.geometry("400x350")
         win.configure(fg_color="#0f0f1a")
         
-        log = ctk.CTkTextbox(win, fg_color="#0a0a14", border_width=0)
+        log = ctk.CTkTextbox(win, fg_color="#0a0a14", border_width=0, font=ctk.CTkFont(family="monospace", size=11))
         log.pack(fill="both", expand=True, padx=10, pady=10)
         
+        def w(txt):
+            if win.winfo_exists():
+                self.after(0, lambda: (log.insert("end", txt), log.see("end")))
+
         def run():
             try:
-                log.insert("end", "Cloning latest version...\n")
+                w("Cloning latest version...\n")
                 tmp = os.path.expanduser("~/.appstore_tmp_update")
                 subprocess.run(["rm", "-rf", tmp], check=True)
                 res = subprocess.run(
                     ["git", "clone", "--depth", "1", APPSTORE_REPO_URL, tmp],
                     capture_output=True, text=True
                 )
-                log.insert("end", res.stdout + res.stderr)
+                w(res.stdout + res.stderr + "\n")
                 
                 script = os.path.join(tmp, "install.sh")
                 if os.path.exists(script):
-                    log.insert("end", "Running install.sh...\n")
+                    w("Running install.sh...\n")
                     proc = subprocess.Popen(
                         ["bash", "install.sh"], cwd=tmp,
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
                     )
                     for line in proc.stdout:
-                        log.insert("end", line)
-                        log.see("end")
+                        w(line)
                     proc.wait()
                     if proc.returncode == 0:
-                        log.insert("end", "\nUpdate complete! Please restart.")
-                        tk.messagebox.showinfo("Update", "AppStore updated! Please restart the app.")
+                        w("\nUpdate complete! Please restart.")
+                        self.after(500, lambda: tk.messagebox.showinfo("Update", "AppStore updated! Please restart the app."))
                     else:
-                        log.insert("end", f"\nFailed (code {proc.returncode})\n")
+                        w(f"\nFailed (code {proc.returncode})\n")
                 else:
-                    log.insert("end", "Error: install.sh not found.\n")
+                    w("Error: install.sh not found.\n")
             except Exception as e:
-                log.insert("end", f"Error: {e}\n")
+                w(f"Error: {e}\n")
         
         threading.Thread(target=run, daemon=True).start()
 
