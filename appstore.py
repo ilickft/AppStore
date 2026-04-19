@@ -401,23 +401,27 @@ class AppStoreApp(ctk.CTk):
         scroll_frame = None
         if self.home_view.winfo_viewable():
             scroll_frame = self.home_view
-        elif self.detail_view.winfo_viewable():
+        elif self.detail_container.winfo_viewable():
             scroll_frame = self.detail_view
             
         if not scroll_frame:
             return
 
-        direction = 0
-        if event.num == 4 or (hasattr(event, "delta") and event.delta > 0):
-            direction = -2
-        elif event.num == 5 or (hasattr(event, "delta") and event.delta < 0):
-            direction = 2
+        # Calculate pixel-based scroll amount for better smoothness
+        if event.num == 4: # X11 Scroll Up
+            amount = -35
+        elif event.num == 5: # X11 Scroll Down
+            amount = 35
+        elif hasattr(event, "delta") and event.delta != 0: # Windows/macOS
+            # On Windows, delta is typically 120. Scale it down to a reasonable pixel amount.
+            amount = int(-1 * (event.delta / 3))
+        else:
+            return
             
-        if direction != 0:
-            try:
-                scroll_frame._parent_canvas.yview_scroll(direction, "units")
-            except Exception:
-                pass
+        try:
+            scroll_frame._parent_canvas.yview_scroll(amount, "pixels")
+        except Exception:
+            pass
 
     def _check_updates_silent(self):
         remote_v = self.api.check_appstore_update()
