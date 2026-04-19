@@ -78,11 +78,42 @@ class InstalledDB:
         self._save()
 
     def get_all_installed(self):
-        # Return only items that are still on disk
-        return [
-            v["app_data"] for k, v in self._db.items() 
-            if v.get("app_data") and os.path.isdir(v.get("path", ""))
-        ]
+        apps = []
+        if not os.path.exists(INSTALL_BASE):
+            return apps
+            
+        for name in os.listdir(INSTALL_BASE):
+            path = os.path.join(INSTALL_BASE, name)
+            if not os.path.isdir(path):
+                continue
+                
+            db_entry = next((v for v in self._db.values() if v.get("name") == name), None)
+            app_data = db_entry.get("app_data") if db_entry else None
+            
+            if app_data:
+                app_data = app_data.copy()
+            else:
+                full_name = next((k for k, v in self._db.items() if v.get("name") == name), f"local/{name}")
+                app_data = {
+                    "full_name": full_name,
+                    "name": name,
+                    "description": "Locally installed application.",
+                    "stargazers_count": 0,
+                    "forks_count": 0,
+                    "language": "Bash",
+                    "pushed_at": db_entry.get("pushed_at", "") if db_entry else "",
+                    "html_url": "",
+                    "owner": {"login": "local", "avatar_url": ""},
+                    "subdir": name,
+                    "repo_name": "local",
+                    "category": "Installed"
+                }
+            
+            app_data["icon_path"] = os.path.join(path, "icon.png")
+            app_data["readme_path"] = os.path.join(path, "readme.md")
+            app_data["category"] = "Installed"
+            apps.append(app_data)
+        return apps
 
     def remove(self, full_name):
         self._db.pop(full_name, None)
@@ -548,7 +579,22 @@ class AppStoreApp(ctk.CTk):
         self.home_view = ctk.CTkScrollableFrame(self.body, fg_color="#0f0f1a", corner_radius=0)
         self.home_view.grid(row=0, column=0, sticky="nsew")
 
-        self.detail_view = ctk.CTkScrollableFrame(self.body, fg_color="#0f0f1a", corner_radius=0)
+        self.detail_container = ctk.CTkFrame(self.body, fg_color="#0f0f1a", corner_radius=0)
+        
+        self.detail_top_bar = ctk.CTkFrame(self.detail_container, height=48, fg_color="#12122a", corner_radius=0)
+        self.detail_top_bar.pack(fill="x")
+        
+        self._back_btn = ctk.CTkButton(
+            self.detail_top_bar, text="←  Back",
+            width=80, height=30, corner_radius=15,
+            fg_color="transparent", border_width=1, border_color="#2a2a50",
+            font=ctk.CTkFont(size=12), text_color="#9aa0a6",
+            command=self.show_home
+        )
+        self._back_btn.pack(side="left", padx=16, pady=9)
+
+        self.detail_view = ctk.CTkScrollableFrame(self.detail_container, fg_color="#0f0f1a", corner_radius=0)
+        self.detail_view.pack(fill="both", expand=True)
 
     def _toggle_search(self):
         if self._search_visible:
@@ -584,8 +630,9 @@ class AppStoreApp(ctk.CTk):
 
     def show_home(self):
         self.title("Home - AppStore")
-        self.detail_view.grid_forget()
+        self.detail_container.grid_forget()
         self.home_view.grid(row=0, column=0, sticky="nsew")
+        self._tabs_row.grid(row=1, column=0, sticky="ew")
         for w in self.home_view.winfo_children():
             w.destroy()
         self._tile_icon_labels.clear()
@@ -634,6 +681,7 @@ class AppStoreApp(ctk.CTk):
         full_name = app.get("full_name", "")
         name = app.get("name", "")
         icon_url = app.get("icon_url")
+        icon_path = app.get("icon_path")
 
         tile = ctk.CTkFrame(parent, fg_color="transparent", cursor="hand2")
         tile.grid(row=row, column=col, padx=8, pady=14, sticky="n")
@@ -656,7 +704,11 @@ class AppStoreApp(ctk.CTk):
         for widget in (tile, icon_lbl, name_lbl):
             widget.bind("<Button-1>", lambda e, a=app: self.show_detail(a))
 
-        if icon_url:
+        if icon_path and os.path.exists(icon_path):
+            threading.Thread(
+                target=self._load_tile_icon_local, args=(full_name, icon_path), daemon=True
+            ).start()
+        elif icon_url:
             threading.Thread(
                 target=self._load_tile_icon, args=(full_name, icon_url), daemon=True
             ).start()
@@ -675,6 +727,19 @@ class AppStoreApp(ctk.CTk):
         except Exception:
             pass
 
+    def _load_tile_icon_local(self, full_name, path):
+        try:
+            if path in self._icon_cache:
+                pil = self._icon_cache[path]
+            else:
+                pil = _circle_crop(Image.open(path), 64)
+                self._icon_cache[path] = pil
+            ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(64, 64))
+            self._ctk_img_refs[full_name] = ctk_img
+            self.after(0, lambda fn=full_name, ci=ctk_img: self._apply_tile_icon(fn, ci))
+        except Exception:
+            pass
+
     def _apply_tile_icon(self, full_name, ctk_img):
         lbl = self._tile_icon_labels.get(full_name)
         if lbl and lbl.winfo_exists():
@@ -684,7 +749,11 @@ class AppStoreApp(ctk.CTk):
         name = app.get("name", "App")
         self.title(f"{name} - AppStore")
         self.home_view.grid_forget()
-        self.detail_view.grid(row=0, column=0, sticky="nsew")
+        self._tabs_row.grid_forget()
+        if self._search_visible:
+            self._search_row.grid_forget()
+            
+        self.detail_container.grid(row=0, column=0, sticky="nsew")
         for w in self.detail_view.winfo_children():
             w.destroy()
         self._ss_refs = []
@@ -707,14 +776,6 @@ class AppStoreApp(ctk.CTk):
         is_inst = self.db.is_installed(full_name)
         needs_upd = self.db.needs_update(full_name, pushed_at) if is_inst else False
 
-        ctk.CTkButton(
-            self.detail_view, text="← Back",
-            width=72, height=30, corner_radius=15,
-            fg_color="transparent", border_width=1, border_color="#2a2a50",
-            font=ctk.CTkFont(size=12), text_color="#9aa0a6",
-            command=self.show_home
-        ).pack(anchor="w", padx=16, pady=(12, 6))
-
         if not is_verified:
             warn_frame = ctk.CTkFrame(self.detail_view, fg_color="#3c1a00", corner_radius=8)
             warn_frame.pack(fill="x", padx=16, pady=(0, 10))
@@ -735,7 +796,12 @@ class AppStoreApp(ctk.CTk):
         self._detail_icon_lbl.pack(side="left", padx=(0, 18))
 
         icon_url = app.get("icon_url")
-        if icon_url:
+        icon_path = app.get("icon_path")
+        if icon_path and os.path.exists(icon_path):
+            threading.Thread(
+                target=self._load_detail_icon_local, args=(icon_path,), daemon=True
+            ).start()
+        elif icon_url:
             threading.Thread(
                 target=self._load_detail_icon, args=(icon_url,), daemon=True
             ).start()
@@ -846,7 +912,7 @@ class AppStoreApp(ctk.CTk):
             fg_color="transparent", hover_color="#141428",
             text_color="#e8eaed", font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w",
-            command=lambda: self._toggle_readme(full_name)
+            command=lambda: self._toggle_readme(app)
         )
         self._about_btn.pack(fill="x", padx=4)
 
@@ -862,6 +928,22 @@ class AppStoreApp(ctk.CTk):
                 r = requests.get(url, timeout=5)
                 pil = _circle_crop(Image.open(BytesIO(r.content)), 82)
                 self._icon_cache[url] = pil
+            ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(82, 82))
+            self._detail_icon_ref = ctk_img
+            self.after(0, lambda: (
+                self._detail_icon_lbl.configure(image=ctk_img)
+                if self._detail_icon_lbl.winfo_exists() else None
+            ))
+        except Exception:
+            pass
+
+    def _load_detail_icon_local(self, path):
+        try:
+            if path in self._icon_cache:
+                pil = self._icon_cache[path]
+            else:
+                pil = _circle_crop(Image.open(path), 82)
+                self._icon_cache[path] = pil
             ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(82, 82))
             self._detail_icon_ref = ctk_img
             self.after(0, lambda: (
@@ -910,7 +992,7 @@ class AppStoreApp(ctk.CTk):
         frame.pack(side="left", padx=4)
         ctk.CTkLabel(frame, image=ctk_img, text="", corner_radius=10).pack(padx=4, pady=4)
 
-    def _toggle_readme(self, full_name):
+    def _toggle_readme(self, app):
         if self._detail_readme_visible:
             self._readme_frame.pack_forget()
             self._about_btn.configure(text="  About this App    ▼")
@@ -927,11 +1009,22 @@ class AppStoreApp(ctk.CTk):
                 )
                 lbl.pack(padx=12, pady=10)
                 threading.Thread(
-                    target=self._fetch_readme, args=(full_name, lbl), daemon=True
+                    target=self._fetch_readme, args=(app, lbl), daemon=True
                 ).start()
 
-    def _fetch_readme(self, full_name, loading_lbl):
-        text = self.api.get_readme(full_name) or "No README found for this repository."
+    def _fetch_readme(self, app, loading_lbl):
+        full_name = app.get("full_name", "")
+        readme_path = app.get("readme_path")
+        text = None
+        if readme_path and os.path.exists(readme_path):
+            try:
+                with open(readme_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+            except:
+                pass
+        
+        if not text:
+            text = self.api.get_readme(full_name) or "No README found for this repository."
         self.after(0, lambda: self._show_readme(text, loading_lbl))
 
     def _show_readme(self, text, loading_lbl):
