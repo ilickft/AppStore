@@ -165,6 +165,13 @@ class ConfigDB:
     def get_username(self):
         return self._data.get("username")
 
+    def set_display_name(self, name):
+        self._data["display_name"] = name
+        self._save()
+
+    def get_display_name(self):
+        return self._data.get("display_name") or self.get_username()
+
     def get_client_id(self):
         return self._data.get("client_id")
 
@@ -1097,7 +1104,7 @@ class AppStoreApp(ctk.CTk):
         name = app.get("name", "")
         repo = full_name.split(":")[0] if ":" in full_name else full_name
         
-        url = f"{GITHUB_API_BASE}/repos/{repo}/issues?state=all&per_page=100"
+        url = f"{GITHUB_API_BASE}/repos/{repo}/issues?state=open&per_page=100"
         reviews = []
         try:
             r = requests.get(url, headers=self.api.headers, timeout=10)
@@ -1111,19 +1118,21 @@ class AppStoreApp(ctk.CTk):
                         
                         rating = rating_match.group(1) if rating_match else "0"
                         comment = comment_match.group(1).strip() if comment_match else body.strip()
-                        user = user_match.group(1).strip() if user_match else issue.get("user", {}).get("login", "Unknown")
+                        display_name = user_match.group(1).strip() if user_match else issue.get("user", {}).get("login", "Unknown")
                         
                         reviews.append({
-                            "user": user,
+                            "id": issue.get("number"),
+                            "login": issue.get("user", {}).get("login"),
+                            "user": display_name,
                             "rating": int(rating),
                             "comment": comment,
                             "avatar": issue.get("user", {}).get("avatar_url", "")
                         })
         except:
             pass
-        self.after(0, lambda: self._render_reviews(reviews))
+        self.after(0, lambda: self._render_reviews(reviews, app))
 
-    def _render_reviews(self, reviews):
+    def _render_reviews(self, reviews, app):
         if not self.detail_view.winfo_exists():
             return
         if self._reviews_loading.winfo_exists():
@@ -1137,20 +1146,134 @@ class AppStoreApp(ctk.CTk):
                          text_color="#555", font=ctk.CTkFont(size=12, slant="italic")).pack(pady=10)
             return
             
-        for rev in reviews:
+        my_login = self.config_db.get_username()
+        for i, rev in enumerate(reviews):
             card = ctk.CTkFrame(self._reviews_list, fg_color="#12122a", corner_radius=8)
             card.pack(fill="x", pady=5)
             
-            top = ctk.CTkFrame(card, fg_color="transparent")
-            top.pack(fill="x", padx=10, pady=(10, 5))
+            header = ctk.CTkFrame(card, fg_color="transparent")
+            header.pack(fill="x", padx=10, pady=(10, 5))
             
-            ctk.CTkLabel(top, text=rev["user"], font=ctk.CTkFont(size=13, weight="bold"), text_color="#e8eaed").pack(side="left")
+            # Left: Avatar + Name
+            left = ctk.CTkFrame(header, fg_color="transparent")
+            left.pack(side="left")
+            
+            ava_size = 28
+            ph = _placeholder_icon(rev["user"], ava_size)
+            ctk_ph = ctk.CTkImage(light_image=ph, dark_image=ph, size=(ava_size, ava_size))
+            ava_lbl = ctk.CTkLabel(left, image=ctk_ph, text="")
+            ava_lbl.pack(side="left", padx=(0, 8))
+            
+            ref_id = f"rev_ava_{i}"
+            self._ctk_img_refs[ref_id] = ctk_ph
+            
+            ctk.CTkLabel(left, text=rev["user"], font=ctk.CTkFont(size=13, weight="bold"), text_color="#e8eaed").pack(side="left")
+            
+            # Right: Tools (Edit, Delete, Reply) + Stars
+            right = ctk.CTkFrame(header, fg_color="transparent")
+            right.pack(side="right")
             
             stars_text = "★" * rev["rating"] + "☆" * (5 - rev["rating"])
-            ctk.CTkLabel(top, text=stars_text, font=ctk.CTkFont(size=14), text_color="#ffb400").pack(side="right")
+            ctk.CTkLabel(right, text=stars_text, font=ctk.CTkFont(size=14), text_color="#ffb400").pack(side="right", padx=(10, 0))
             
+            tools = ctk.CTkFrame(right, fg_color="transparent")
+            tools.pack(side="right")
+            
+            tbtn = dict(width=24, height=24, corner_radius=12, fg_color="transparent", 
+                        hover_color="#1a1a30", font=ctk.CTkFont(size=14))
+            
+            # Reply is for everyone
+            ctk.CTkButton(tools, text="↩", command=lambda r=rev: self._show_reply_dialog(app, r), **tbtn).pack(side="left", padx=2)
+            
+            # Edit/Delete only for owner
+            if rev["login"] == my_login:
+                ctk.CTkButton(tools, text="✎", command=lambda r=rev: self._show_write_review_dialog(app, edit_rev=r), **tbtn).pack(side="left", padx=2)
+                ctk.CTkButton(tools, text="🗑", text_color="#ff4b4b", command=lambda r=rev: self._delete_review(app, r), **tbtn).pack(side="left", padx=2)
+
             ctk.CTkLabel(card, text=rev["comment"], font=ctk.CTkFont(size=12), text_color="#9aa0a6", 
-                         justify="left", wraplength=480).pack(fill="x", padx=10, pady=(0, 10))
+                         justify="left", wraplength=480, anchor="w").pack(fill="x", padx=10, pady=(0, 10))
+            
+            if rev.get("avatar"):
+                threading.Thread(target=self._load_review_avatar, args=(ava_lbl, rev["avatar"], ref_id), daemon=True).start()
+
+    def _delete_review(self, app, rev):
+        if not tk.messagebox.askyesno("Delete Review", "Delete your review?"):
+            return
+        
+        full_name = app.get("full_name", "")
+        repo = full_name.split(":")[0] if ":" in full_name else full_name
+        url = f"{GITHUB_API_BASE}/repos/{repo}/issues/{rev['id']}"
+        
+        def run():
+            try:
+                r = requests.patch(url, headers=self.api.headers, json={"state": "closed"}, timeout=10)
+                if r.status_code == 200:
+                    self.after(0, lambda: (
+                        tk.messagebox.showinfo("Deleted", "Review deleted successfully."),
+                        self._load_reviews(app)
+                    ))
+                else:
+                    self.after(0, lambda: tk.messagebox.showerror("Error", f"Failed to delete: {r.status_code}"))
+            except:
+                pass
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_reply_dialog(self, app, rev):
+        if not self.api.token:
+            tk.messagebox.showwarning("Login Required", "You must be logged in to reply.")
+            self._login()
+            return
+            
+        win = ctk.CTkToplevel(self)
+        win.title(f"Reply to {rev['user']}")
+        win.geometry("400x300")
+        win.configure(fg_color="#0f0f1a")
+        win.transient(self)
+        
+        ctk.CTkLabel(win, text=f"Reply to {rev['user']}", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(20, 10))
+        
+        comment_box = ctk.CTkTextbox(win, height=120, fg_color="#1a1a30", border_color="#2a2a50", border_width=1)
+        comment_box.pack(fill="x", padx=20, pady=10)
+        
+        def submit():
+            comment = comment_box.get("1.0", "end").strip()
+            if not comment:
+                return
+                
+            full_name = app.get("full_name", "")
+            repo = full_name.split(":")[0] if ":" in full_name else full_name
+            url = f"{GITHUB_API_BASE}/repos/{repo}/issues/{rev['id']}/comments"
+            
+            sub_btn.configure(state="disabled", text="Replying...")
+            def run():
+                try:
+                    r = requests.post(url, headers=self.api.headers, json={"body": comment}, timeout=10)
+                    if r.status_code == 201:
+                        self.after(0, lambda: (
+                            tk.messagebox.showinfo("Success", "Reply posted successfully!"),
+                            win.destroy()
+                        ))
+                    else:
+                        self.after(0, lambda: (
+                            tk.messagebox.showerror("Error", "Failed to post reply."),
+                            sub_btn.configure(state="normal", text="Post Reply")
+                        ))
+                except:
+                    pass
+            threading.Thread(target=run, daemon=True).start()
+            
+        sub_btn = ctk.CTkButton(win, text="Post Reply", command=submit)
+        sub_btn.pack(pady=20)
+
+    def _load_review_avatar(self, label, url, ref_id):
+        try:
+            r = requests.get(url, timeout=5)
+            pil = _circle_crop(Image.open(BytesIO(r.content)), 28)
+            ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(28, 28))
+            self._ctk_img_refs[ref_id] = ctk_img
+            self.after(0, lambda: label.configure(image=ctk_img) if label.winfo_exists() else None)
+        except:
+            pass
 
     def _show_write_review_dialog(self, app):
         if not self.api.token:
@@ -1500,11 +1623,12 @@ class AppStoreApp(ctk.CTk):
                 user = self.api.get_current_user()
                 if user:
                     self.config_db.set_username(user.get("login"))
+                    self.config_db.set_display_name(user.get("name") or user.get("login"))
                 
                 self.after(0, lambda: (
                     win.destroy(),
                     self._profile_btn.configure(text_color="#34a853"),
-                    tk.messagebox.showinfo("Login Success", f"Welcome, {self.config_db.get_username()}!")
+                    tk.messagebox.showinfo("Login Success", f"Welcome, {self.config_db.get_display_name()}!")
                 ))
 
         threading.Thread(target=wait, daemon=True).start()
