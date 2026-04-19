@@ -374,6 +374,7 @@ class AppStoreApp(ctk.CTk):
             
         self.loaded_apps = []
         self._apps_fetched = False
+        self._active_installs = {}
         self._search_after = None
         self._search_visible = False
         self._icon_cache = {}
@@ -452,6 +453,7 @@ class AppStoreApp(ctk.CTk):
 
         ctk.CTkButton(icons_frame, text="⌕", command=self._toggle_search, **ibtn).pack(side="left", padx=1)
         ctk.CTkButton(icons_frame, text="⌂", command=self.show_home, **ibtn).pack(side="left", padx=1)
+        ctk.CTkButton(icons_frame, text="⬇", command=self.show_downloads, **ibtn).pack(side="left", padx=1)
         ctk.CTkButton(icons_frame, text="↻", command=self._force_refresh_apps, **ibtn).pack(side="left", padx=1)
         
         self._update_btn = ctk.CTkButton(icons_frame, text="⤒", command=self._update_appstore, **ibtn)
@@ -618,6 +620,51 @@ class AppStoreApp(ctk.CTk):
 
         self.detail_view = ctk.CTkScrollableFrame(self.detail_container, fg_color="#0f0f1a", corner_radius=0)
         self.detail_view.pack(fill="both", expand=True)
+
+        self.downloads_view = ctk.CTkScrollableFrame(self.body, fg_color="#0f0f1a", corner_radius=0)
+
+    def show_downloads(self):
+        self.title("Downloads - AppStore")
+        self.home_view.grid_forget()
+        self.detail_container.grid_forget()
+        self._tabs_row.grid_forget()
+        if self._search_visible:
+            self._search_row.grid_forget()
+        
+        self.downloads_view.grid(row=0, column=0, sticky="nsew")
+        self._render_downloads_list()
+
+    def _render_downloads_list(self):
+        for w in self.downloads_view.winfo_children():
+            w.destroy()
+            
+        ctk.CTkLabel(self.downloads_view, text="Active Downloads", 
+                     font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 10), padx=20, anchor="w")
+        
+        if not self._active_installs:
+            ctk.CTkLabel(self.downloads_view, text="No active downloads.", 
+                         text_color="#555", font=ctk.CTkFont(size=13)).pack(pady=40)
+            return
+
+        for full_name, data in list(self._active_installs.items()):
+            app = data["app"]
+            card = ctk.CTkFrame(self.downloads_view, fg_color="#12122a", corner_radius=10)
+            card.pack(fill="x", padx=20, pady=5)
+            
+            lbl_row = ctk.CTkFrame(card, fg_color="transparent")
+            lbl_row.pack(fill="x", padx=15, pady=(10, 5))
+            
+            ctk.CTkLabel(lbl_row, text=app.get("name"), font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+            status_lbl = ctk.CTkLabel(lbl_row, text=data["status"], font=ctk.CTkFont(size=12), text_color="#1a73e8")
+            status_lbl.pack(side="right")
+            
+            prog = ctk.CTkProgressBar(card, height=8, corner_radius=4, progress_color="#1a73e8")
+            prog.pack(fill="x", padx=15, pady=(0, 15))
+            prog.set(data["progress"])
+            
+            # Store refs to update them later
+            data["ui_prog"] = prog
+            data["ui_status"] = status_lbl
 
     def _toggle_search(self):
         if self._search_visible:
@@ -789,8 +836,12 @@ class AppStoreApp(ctk.CTk):
 
     def show_detail(self, app):
         name = app.get("name", "App")
+        full_name = app.get("full_name", "")
+        self._current_viewing_fn = full_name
+        
         self.title(f"{name} - AppStore")
         self.home_view.grid_forget()
+        self.downloads_view.grid_forget()
         self._tabs_row.grid_forget()
         if self._search_visible:
             self._search_row.grid_forget()
@@ -942,6 +993,14 @@ class AppStoreApp(ctk.CTk):
         self._install_progress.pack(fill="x", pady=(2, 10))
         self._install_progress.set(0)
 
+        # Re-attach progress UI if active
+        if full_name in self._active_installs:
+            data = self._active_installs[full_name]
+            self._install_progress_frame.pack(fill="x", padx=16, after=self._primary_btn)
+            self._primary_btn.configure(state="disabled", text="Installing...")
+            self._install_status_lbl.configure(text=data["status"])
+            self._install_progress.set(data["progress"])
+
         self._ss_sep_top = ctk.CTkFrame(self.detail_view, height=1, fg_color="#1e1e40")
         self._ss_sep_top.pack(fill="x", padx=16, pady=14)
 
@@ -1036,24 +1095,24 @@ class AppStoreApp(ctk.CTk):
     def _load_screenshots(self, app):
         full_name = app.get("full_name", "")
         name = app.get("name", "")
-        repo_name = app.get("repo_name", "")
-        owner = app.get("owner", {}).get("login", "")
         subdir = app.get("subdir", "")
         
-        # 1. Check README
-        urls = self.api.get_readme_images(full_name)
+        all_urls = []
         
-        # 2. Check local if installed
+        # 1. Check README images
+        all_urls.extend(self.api.get_readme_images(full_name))
+        
+        # 2. Check local root folder if installed
         install_path = os.path.join(INSTALL_BASE, name)
-        if not urls and os.path.exists(install_path):
-            local_urls = []
-            for f in os.listdir(install_path):
-                if f.lower().startswith("screenshot") and f.lower().endswith((".png", ".jpg", ".jpeg")):
-                    local_urls.append(os.path.join(install_path, f))
-            urls = local_urls
+        if os.path.exists(install_path):
+            try:
+                for f in os.listdir(install_path):
+                    if f.lower().startswith("screenshot") and f.lower().endswith((".png", ".jpg", ".jpeg")):
+                        all_urls.append(os.path.join(install_path, f))
+            except: pass
             
-        # 3. Check GitHub contents
-        if not urls and ":" in full_name:
+        # 3. Check GitHub root folder contents
+        if ":" in full_name:
             repo, _ = full_name.split(":", 1)
             try:
                 r = requests.get(f"{GITHUB_API_BASE}/repos/{repo}/contents/{subdir}", 
@@ -1062,33 +1121,50 @@ class AppStoreApp(ctk.CTk):
                     for item in r.json():
                         fname = item.get("name", "").lower()
                         if fname.startswith("screenshot") and fname.endswith((".png", ".jpg", ".jpeg")):
-                            urls.append(item.get("download_url"))
-            except:
-                pass
+                            dl_url = item.get("download_url")
+                            if dl_url not in all_urls:
+                                all_urls.append(dl_url)
+            except: pass
 
-        self.after(0, lambda: self._render_screenshots(urls))
+        # Filter duplicates and limit
+        seen = set()
+        unique_urls = []
+        for u in all_urls:
+            if u not in seen:
+                unique_urls.append(u)
+                seen.add(u)
+        
+        self.after(0, lambda: self._render_screenshots(unique_urls))
 
     def _render_screenshots(self, urls):
         if self._ss_loading_lbl.winfo_exists():
             self._ss_loading_lbl.destroy()
+            
         if not urls:
-            if self._screenshots_outer.winfo_exists():
-                self._screenshots_outer.pack_forget()
-            if self._ss_sep_top.winfo_exists():
-                self._ss_sep_top.pack_forget()
-            if self._ss_sep_bottom.winfo_exists():
-                self._ss_sep_bottom.pack_forget()
+            self._hide_ss_section()
             return
             
-        scroll = ctk.CTkScrollableFrame(
+        self._ss_scroll = ctk.CTkScrollableFrame(
             self._screenshots_outer, height=210,
             orientation="horizontal", fg_color="transparent"
         )
-        scroll.pack(fill="x", pady=4)
-        for url in urls[:6]:
+        self._ss_scroll.pack(fill="x", pady=4)
+        
+        self._loaded_ss_count = 0
+        self._total_ss_attempted = len(urls[:8])
+        
+        for url in urls[:8]:
             threading.Thread(
-                target=self._load_one_screenshot, args=(scroll, url), daemon=True
+                target=self._load_one_screenshot, args=(self._ss_scroll, url), daemon=True
             ).start()
+
+    def _hide_ss_section(self):
+        if self._screenshots_outer.winfo_exists():
+            self._screenshots_outer.pack_forget()
+        if self._ss_sep_top.winfo_exists():
+            self._ss_sep_top.pack_forget()
+        if self._ss_sep_bottom.winfo_exists():
+            self._ss_sep_bottom.pack_forget()
 
     def _load_one_screenshot(self, parent, url):
         try:
@@ -1097,18 +1173,32 @@ class AppStoreApp(ctk.CTk):
                 img = Image.open(BytesIO(r.content))
             else:
                 img = Image.open(url)
+            
+            # Basic validation: must be reasonably sized to be a screenshot
+            if img.width < 100 or img.height < 100:
+                raise Exception("Too small")
+
             h = 190
             w = int(img.width * h / img.height)
             img = img.resize((w, h), Image.Resampling.LANCZOS)
             ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(w, h))
             self.after(0, lambda ci=ctk_img, p=parent: self._place_screenshot(ci, p))
-        except Exception:
+        except:
+            self.after(0, self._on_ss_fail)
+
+    def _on_ss_fail(self):
+        self._loaded_ss_count = getattr(self, "_loaded_ss_count", 0)
+        self._total_ss_attempted = getattr(self, "_total_ss_attempted", 0)
+        # If all attempted images failed, hide the section
+        if hasattr(self, "_ss_scroll") and not self._ss_scroll.winfo_children():
+            # We check again after some time or on last fail
             pass
 
     def _place_screenshot(self, ctk_img, parent):
         if not parent.winfo_exists():
             return
         self._ss_refs.append(ctk_img)
+        self._loaded_ss_count += 1
         frame = ctk.CTkFrame(parent, fg_color="#1a1a2e", corner_radius=10)
         frame.pack(side="left", padx=4)
         ctk.CTkLabel(frame, image=ctk_img, text="", corner_radius=10).pack(padx=4, pady=4)
@@ -1464,6 +1554,39 @@ class AppStoreApp(ctk.CTk):
         
         threading.Thread(target=run, daemon=True).start()
 
+    def _update_install_ui(self, full_name, status, progress, finished=False, error=False):
+        if full_name not in self._active_installs:
+            return
+        
+        data = self._active_installs[full_name]
+        data["status"] = status
+        data["progress"] = progress
+        
+        # 1. Update Downloads View if visible
+        if self.downloads_view.winfo_ismapped():
+            if "ui_prog" in data and data["ui_prog"].winfo_exists():
+                self.after(0, lambda: (
+                    data["ui_prog"].set(progress),
+                    data["ui_status"].configure(text=status, text_color="#ff4b4b" if error else "#1a73e8")
+                ))
+
+        # 2. Update Detail View if visible and matches app
+        if self.detail_container.winfo_ismapped() and hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
+            if hasattr(self, "_install_progress") and self._install_progress.winfo_exists():
+                self.after(0, lambda: (
+                    self._install_progress.set(progress),
+                    self._install_status_lbl.configure(text=status, text_color="#ff4b4b" if error else "#1a73e8")
+                ))
+
+        if finished or error:
+            # We keep it in list for a few seconds if finished
+            def cleanup():
+                if full_name in self._active_installs:
+                    del self._active_installs[full_name]
+                    if self.downloads_view.winfo_ismapped():
+                        self._render_downloads_list()
+            self.after(5000, cleanup)
+
     def _primary_action(self, app, action):
         if action == "Install":
             self._install(app)
@@ -1480,24 +1603,20 @@ class AppStoreApp(ctk.CTk):
         pushed_at = app.get("pushed_at", "")
         install_path = os.path.join(INSTALL_BASE, name)
 
-        action_label = "Updating" if is_update else "Installing"
-        
-        # Show progress UI
-        self._install_progress_frame.pack(fill="x", padx=16, after=self._primary_btn)
-        self._primary_btn.configure(state="disabled", text=action_label + "...")
-        self._install_status_lbl.configure(text=f"Preparing {name}...", text_color="#1a73e8")
-        self._install_progress.set(0)
+        if full_name in self._active_installs:
+            return # Already installing
 
-        def update_ui(status, progress):
-            if self.detail_view.winfo_exists():
-                self.after(0, lambda: (
-                    self._install_status_lbl.configure(text=status),
-                    self._install_progress.set(progress)
-                ))
+        action_label = "Updating" if is_update else "Installing"
+        self._active_installs[full_name] = {"status": "Starting...", "progress": 0, "app": app}
+        
+        # Update current UI if it's the right app
+        if hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
+            self._install_progress_frame.pack(fill="x", padx=16, after=self._primary_btn)
+            self._primary_btn.configure(state="disabled", text=action_label + "...")
 
         def run():
             try:
-                update_ui(f"Cleaning {name} folder...", 0.1)
+                self._update_install_ui(full_name, f"Cleaning {name} folder...", 0.1)
                 if os.path.exists(install_path):
                     subprocess.run(["rm", "-rf", install_path], check=True)
                 
@@ -1506,13 +1625,13 @@ class AppStoreApp(ctk.CTk):
                     subprocess.run(["rm", "-rf", tmp_dir])
                 os.makedirs(tmp_dir)
                 
-                update_ui("Cloning repository (sparse)...", 0.3)
+                self._update_install_ui(full_name, "Cloning repository...", 0.3)
                 subprocess.run(
                     ["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none", repo_url, tmp_dir],
                     check=True, capture_output=True
                 )
                 
-                update_ui("Checking out application files...", 0.5)
+                self._update_install_ui(full_name, "Checking out files...", 0.5)
                 subprocess.run(
                     ["git", "sparse-checkout", "set", subdir],
                     cwd=tmp_dir, check=True, capture_output=True
@@ -1523,26 +1642,27 @@ class AppStoreApp(ctk.CTk):
                 
                 src = os.path.join(tmp_dir, subdir)
                 if not os.path.exists(src):
-                    raise Exception(f"Subdirectory {subdir} not found in repo.")
+                    raise Exception("Folder not found in repo")
                 
-                update_ui("Moving files to destination...", 0.7)
+                self._update_install_ui(full_name, "Moving to apps folder...", 0.7)
                 subprocess.run(["mv", src, install_path], check=True)
                 subprocess.run(["rm", "-rf", tmp_dir])
                     
                 script = os.path.join(install_path, "install.sh")
                 if os.path.exists(script):
-                    update_ui("Running install.sh...", 0.85)
+                    self._update_install_ui(full_name, "Running install.sh...", 0.85)
                     subprocess.run(["bash", "install.sh"], cwd=install_path, check=True, capture_output=True)
                 
                 self.db.add(full_name, name, install_path, pushed_at, app_data=app)
-                update_ui("Success!", 1.0)
-                self.after(1000, lambda: self.show_detail(app))
+                self._update_install_ui(full_name, "Success!", 1.0, finished=True)
+                
+                if hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
+                    self.after(1000, lambda: self.show_detail(app))
             except Exception as e:
-                update_ui(f"Error: {str(e)[:40]}...", 0)
-                self.after(0, lambda: self._install_status_lbl.configure(text_color="#ff4b4b"))
-                self.after(3000, lambda: self._primary_btn.configure(state="normal", text=action_label))
-            finally:
-                self.after(5000, lambda: self._install_progress_frame.pack_forget() if self._install_progress_frame.winfo_exists() else None)
+                err_msg = str(e)[:30] + "..."
+                self._update_install_ui(full_name, f"Error: {err_msg}", 0, error=True)
+                if hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
+                    self.after(3000, lambda: self._primary_btn.configure(state="normal", text=action_label))
 
         threading.Thread(target=run, daemon=True).start()
 
