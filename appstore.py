@@ -79,6 +79,49 @@ class InstalledDB:
         return bool(entry and entry.get("pushed_at", "") < current_pushed_at)
 
 
+class ConfigDB:
+    def __init__(self):
+        self._path = os.path.expanduser("~/.config/appstore/config.json")
+        os.makedirs(os.path.dirname(self._path), exist_ok=True)
+        self._data = {}
+        self._load()
+
+    def _load(self):
+        if os.path.exists(self._path):
+            try:
+                with open(self._path) as f:
+                    self._data = json.load(f)
+            except Exception:
+                self._data = {}
+
+    def _save(self):
+        try:
+            with open(self._path, "w") as f:
+                json.dump(self._data, f, indent=2)
+            os.chmod(self._path, 0o600)
+        except Exception:
+            pass
+
+    def get_token(self):
+        return self._data.get("token")
+
+    def set_token(self, token):
+        self._data["token"] = token
+        self._save()
+
+    def clear_token(self):
+        self._data.pop("token", None)
+        self._data.pop("username", None)
+        self._save()
+
+    def set_username(self, username):
+        self._data["username"] = username
+        self._save()
+
+    def get_username(self):
+        return self._data.get("username")
+
+
 class GitHubAPI:
     def __init__(self):
         self.token = None
@@ -90,7 +133,21 @@ class GitHubAPI:
 
     def set_token(self, token):
         self.token = token
-        self.headers["Authorization"] = f"token {token}"
+        if token:
+            self.headers["Authorization"] = f"token {token}"
+        elif "Authorization" in self.headers:
+            del self.headers["Authorization"]
+
+    def get_current_user(self):
+        if not self.token:
+            return None
+        try:
+            r = requests.get(f"{GITHUB_API_BASE}/user", headers=self.headers, timeout=8)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
+        return None
 
     def fetch_verified_repos(self):
         try:
@@ -171,8 +228,10 @@ class GitHubAPI:
             )
             if r.status_code == 200:
                 return r.json()
-        except Exception:
-            pass
+            else:
+                print(f"GitHub Auth Error: {r.status_code} {r.text}")
+        except Exception as e:
+            print(f"Auth request exception: {e}")
         return None
 
     def poll_for_token(self, device_code, interval):
@@ -201,7 +260,7 @@ class AppStoreApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Termux AppStore")
-        self.geometry("800x600")
+        self.geometry("600x400")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         self.configure(fg_color="#0f0f1a")
@@ -859,8 +918,31 @@ class AppStoreApp(ctk.CTk):
 
     def _login(self):
         if self.api.token:
-            tk.messagebox.showinfo("GitHub", "You are already logged in.")
-            return
+            self._show_profile_dialog()
+        else:
+            self._show_login_dialog()
+
+    def _show_profile_dialog(self):
+        win = ctk.CTkToplevel(self)
+        win.title("GitHub Profile")
+        win.geometry("300x200")
+        win.configure(fg_color="#0f0f1a")
+        win.transient(self)
+
+        username = self.config.get_username() or "User"
+        ctk.CTkLabel(win, text=f"Logged in as:", font=ctk.CTkFont(size=12), text_color="#9aa0a6").pack(pady=(30, 0))
+        ctk.CTkLabel(win, text=username, font=ctk.CTkFont(size=18, weight="bold"), text_color="#e8eaed").pack(pady=(0, 20))
+
+        def logout():
+            self.api.set_token(None)
+            self.config.clear_token()
+            self._profile_btn.configure(text_color="#e8eaed")
+            win.destroy()
+            tk.messagebox.showinfo("Logout", "You have been logged out.")
+
+        ctk.CTkButton(win, text="Logout", fg_color="#4a1a1a", hover_color="#6a1a1a", command=logout).pack(pady=10)
+
+    def _show_login_dialog(self):
         data = self.api.start_device_flow()
         if not data:
             tk.messagebox.showerror("Error", "Could not connect to GitHub login service.")
@@ -873,27 +955,45 @@ class AppStoreApp(ctk.CTk):
 
         win = ctk.CTkToplevel(self)
         win.title("GitHub Login")
-        win.geometry("400x280")
+        win.geometry("460x380")
         win.configure(fg_color="#0f0f1a")
+        win.transient(self)
 
-        ctk.CTkLabel(win, text="Visit the URL below and enter your code:",
-                     font=ctk.CTkFont(size=13), text_color="#9aa0a6").pack(pady=(26, 4))
-        ctk.CTkLabel(win, text=verification_uri,
-                     text_color="#7eb3ff", font=ctk.CTkFont(size=12)).pack()
-        ctk.CTkLabel(win, text=user_code,
-                     font=ctk.CTkFont(size=32, weight="bold"),
-                     text_color="#e8eaed").pack(pady=16)
-        ctk.CTkButton(win, text="Open in Browser",
-                      width=160, height=36, corner_radius=18,
-                      command=lambda: webbrowser.open(verification_uri)).pack(pady=4)
+        ctk.CTkLabel(win, text="Link your GitHub Account", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(25, 15))
+        
+        inst = ("1. Click the button below to open GitHub.\n"
+                "2. Sign in if required.\n"
+                "3. Enter the 8-digit code shown below.")
+        ctk.CTkLabel(win, text=inst, font=ctk.CTkFont(size=13), justify="left", text_color="#9aa0a6").pack(pady=10)
+
+        code_frame = ctk.CTkFrame(win, fg_color="#1a1a30", corner_radius=10)
+        code_frame.pack(pady=20, padx=40, fill="x")
+        
+        ctk.CTkLabel(code_frame, text=user_code, font=ctk.CTkFont(size=36, weight="bold", family="monospace"), 
+                     text_color="#7eb3ff").pack(pady=15)
+
+        status_lbl = ctk.CTkLabel(win, text="Waiting for authorization...", font=ctk.CTkFont(size=12, slant="italic"), text_color="#555")
+        status_lbl.pack()
+
+        def open_browser():
+            webbrowser.open(verification_uri)
+
+        ctk.CTkButton(win, text="Open Browser", width=200, height=40, corner_radius=20, 
+                      font=ctk.CTkFont(size=14, weight="bold"), command=open_browser).pack(pady=20)
 
         def wait():
             token = self.api.poll_for_token(device_code, interval)
             if token:
                 self.api.set_token(token)
+                self.config.set_token(token)
+                user = self.api.get_current_user()
+                if user:
+                    self.config.set_username(user.get("login"))
+                
                 self.after(0, lambda: (
                     win.destroy(),
-                    self._profile_btn.configure(text_color="#34a853")
+                    self._profile_btn.configure(text_color="#34a853"),
+                    tk.messagebox.showinfo("Login Success", f"Welcome, {self.config.get_username()}!")
                 ))
 
         threading.Thread(target=wait, daemon=True).start()
