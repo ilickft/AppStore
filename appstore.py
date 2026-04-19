@@ -701,6 +701,7 @@ class AppStoreApp(ctk.CTk):
     def show_home(self):
         self.title("Home - AppStore")
         self.detail_container.grid_forget()
+        self.downloads_view.grid_forget()
         self.home_view.grid(row=0, column=0, sticky="nsew")
         self._tabs_row.grid(row=1, column=0, sticky="ew")
         
