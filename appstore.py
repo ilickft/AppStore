@@ -245,12 +245,59 @@ class AppStoreApp(ctk.CTk):
                     fg_color="transparent", hover_color="#1e1e40",
                     font=ctk.CTkFont(size=19))
 
+        ctk.CTkButton(icons_frame, text="⤒", command=self._update_appstore, **ibtn).pack(side="left", padx=2)
         ctk.CTkButton(icons_frame, text="⌂", command=self.show_home, **ibtn).pack(side="left", padx=2)
         ctk.CTkButton(icons_frame, text="⌕", command=self._toggle_search, **ibtn).pack(side="left", padx=2)
         self._profile_btn = ctk.CTkButton(
             icons_frame, text="◉", command=self._login, **ibtn
         )
         self._profile_btn.pack(side="left", padx=(2, 4))
+
+    def _update_appstore(self):
+        if not tk.messagebox.askyesno("Update", "Update AppStore to the latest version?"):
+            return
+            
+        win = ctk.CTkToplevel(self)
+        win.title("Updating...")
+        win.geometry("400x300")
+        win.configure(fg_color="#0f0f1a")
+        
+        log = ctk.CTkTextbox(win, fg_color="#0a0a14", border_width=0)
+        log.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        def run():
+            try:
+                log.insert("end", "Cloning latest version...\n")
+                tmp = os.path.expanduser("~/.appstore_tmp_update")
+                subprocess.run(["rm", "-rf", tmp], check=True)
+                res = subprocess.run(
+                    ["git", "clone", "--depth", "1", APPSTORE_REPO_URL, tmp],
+                    capture_output=True, text=True
+                )
+                log.insert("end", res.stdout + res.stderr)
+                
+                script = os.path.join(tmp, "install.sh")
+                if os.path.exists(script):
+                    log.insert("end", "Running install.sh...\n")
+                    proc = subprocess.Popen(
+                        ["bash", "install.sh"], cwd=tmp,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                    )
+                    for line in proc.stdout:
+                        log.insert("end", line)
+                        log.see("end")
+                    proc.wait()
+                    if proc.returncode == 0:
+                        log.insert("end", "\nUpdate complete! Please restart.")
+                        tk.messagebox.showinfo("Update", "AppStore updated! Please restart the app.")
+                    else:
+                        log.insert("end", f"\nFailed (code {proc.returncode})\n")
+                else:
+                    log.insert("end", "Error: install.sh not found.\n")
+            except Exception as e:
+                log.insert("end", f"Error: {e}\n")
+        
+        threading.Thread(target=run, daemon=True).start()
 
     def _build_search_row(self):
         self._search_row = ctk.CTkFrame(self, height=46, corner_radius=0, fg_color="#0d0d20")
