@@ -397,30 +397,28 @@ class AppStoreApp(ctk.CTk):
         self.bind_all("<MouseWheel>", self._on_mousewheel)
 
     def _on_mousewheel(self, event):
-        # Determine the currently active scrollable frame
-        scroll_frame = None
+        # Determine active scrollable frame
+        # On Windows, we check if home_view is visible
         if self.home_view.winfo_viewable():
-            scroll_frame = self.home_view
-        elif self.detail_container.winfo_viewable():
-            scroll_frame = self.detail_view
-            
-        if not scroll_frame:
-            return
-
-        # Calculate pixel-based scroll amount for better smoothness
-        if event.num == 4: # X11 Scroll Up
-            amount = -35
-        elif event.num == 5: # X11 Scroll Down
-            amount = 35
-        elif hasattr(event, "delta") and event.delta != 0: # Windows/macOS
-            # On Windows, delta is typically 120. Scale it down to a reasonable pixel amount.
-            amount = int(-1 * (event.delta / 3))
+            sf = self.home_view
         else:
-            return
+            sf = self.detail_view
             
         try:
-            scroll_frame._parent_canvas.yview_scroll(amount, "pixels")
-        except Exception:
+            # CTkScrollableFrame internal canvas
+            canvas = getattr(sf, "_parent_canvas", getattr(sf, "_canvas", None))
+            if not canvas:
+                return
+
+            if event.num == 4: # Linux/X11 Up
+                canvas.yview_scroll(-3, "units")
+            elif event.num == 5: # Linux/X11 Down
+                canvas.yview_scroll(3, "units")
+            elif hasattr(event, "delta") and event.delta != 0: # Windows/macOS
+                # Windows delta is 120 per notch. Scroll 3-4 lines per notch.
+                amount = int(-1 * (event.delta / 30))
+                canvas.yview_scroll(amount, "units")
+        except:
             pass
 
     def _check_updates_silent(self):
