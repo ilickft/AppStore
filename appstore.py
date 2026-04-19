@@ -257,7 +257,6 @@ class AppStoreApp(ctk.CTk):
         self._search_after, self._search_visible = None, False
         self._icon_cache, self._ctk_img_refs, self._tile_icon_labels = {}, {}, {}
         self._ss_refs, self._detail_readme_visible, self._readme_loaded = [], False, False
-        self._last_res_apps = []
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
         self.current_category = "All"
@@ -268,16 +267,6 @@ class AppStoreApp(ctk.CTk):
         self.show_home()
         threading.Thread(target=self._check_updates_silent, daemon=True).start()
         self.bind_all("<Button-4>", self._on_mousewheel); self.bind_all("<Button-5>", self._on_mousewheel); self.bind_all("<MouseWheel>", self._on_mousewheel)
-        self.bind("<Configure>", self._on_resize)
-
-    def _on_resize(self, event):
-        if event.widget == self:
-            if hasattr(self, "_resize_after"): self.after_cancel(self._resize_after)
-            self._resize_after = self.after(200, self._perform_grid_update)
-
-    def _perform_grid_update(self):
-        if self.home_view.winfo_viewable() and self._last_res_apps:
-            self._render_home(self._last_res_apps)
 
     def _on_mousewheel(self, event):
         sf = self.home_view if self.home_view.winfo_viewable() else (self.downloads_view if self.downloads_view.winfo_viewable() else self.detail_view)
@@ -440,20 +429,15 @@ class AppStoreApp(ctk.CTk):
     def _force_refresh_apps(self): self._apps_fetched = False; self.show_home()
     def _fetch_apps(self): self.api.fetch_verified_repos(); self.loaded_apps = self.api.search_apps(); self._apps_fetched = True; self.after(0, self._apply_filter)
     def _render_home(self, apps):
-        self._last_res_apps = list(apps)
         for w in self.home_view.winfo_children(): w.destroy()
         self._tile_icon_labels.clear()
         if not apps:
             f = ctk.CTkFrame(self.home_view, fg_color="transparent"); f.pack(expand=True, pady=80)
             ctk.CTkLabel(f, text="Nothing found", font=ctk.CTkFont(size=17, weight="bold")).pack()
             ctk.CTkButton(f, text="↻  Retry", command=self.show_home).pack(pady=12); return
-        
-        width = self.winfo_width()
-        tile_w = 110
-        COLS = max(1, (width - 40) // tile_w)
-        grid = ctk.CTkFrame(self.home_view, fg_color="transparent")
-        grid.pack(pady=14)
-        
+        COLS, grid = 5, ctk.CTkFrame(self.home_view, fg_color="transparent")
+        grid.pack(fill="both", expand=True, padx=14, pady=14)
+        for c in range(COLS): grid.grid_columnconfigure(c, weight=1)
         for i, app in enumerate(apps):
             r, c = divmod(i, COLS); self._make_tile(grid, app, r, c)
     def _make_tile(self, parent, app, row, col):
