@@ -111,21 +111,14 @@ class GitHubAPI:
         apps = []
         seen = set()
         
-        # 1. Always include the AppStore itself for self-updates
-        appstore_self = self._get_repo("ilickft/AppStore")
-        if appstore_self:
-            apps.append(appstore_self)
-            seen.add(appstore_self["full_name"])
-
-        # 2. Fetch from the verified list
+        # 1. Fetch from the verified list
         for repo_name in list(self.verified_repos):
-            if repo_name not in seen:
-                d = self._get_repo(repo_name)
-                if d:
-                    apps.append(d)
-                    seen.add(d["full_name"])
+            d = self._get_repo(repo_name)
+            if d:
+                apps.append(d)
+                seen.add(d["full_name"])
         
-        # 3. Browse GitHub
+        # 2. Browse GitHub
         url = f"{GITHUB_API_BASE}/search/repositories?q={query}&per_page=60&sort=updated"
         try:
             r = requests.get(url, headers=self.headers, timeout=12)
