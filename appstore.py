@@ -345,6 +345,15 @@ class AppStoreApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
         self.configure(fg_color="#0f0f1a")
 
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(__file__), "AppStore.png")
+        if os.path.exists(icon_path):
+            try:
+                img = tk.PhotoImage(file=icon_path)
+                self.wm_iconphoto(True, img)
+            except Exception:
+                pass
+
         self.api = GitHubAPI()
         self.config_db = ConfigDB()
         self.db = InstalledDB()
