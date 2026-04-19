@@ -273,7 +273,14 @@ class AppStoreApp(ctk.CTk):
         self.configure(fg_color="#0f0f1a")
 
         self.api = GitHubAPI()
+        self.config_db = ConfigDB()
         self.db = InstalledDB()
+        
+        # Load saved token
+        saved_token = self.config_db.get_token()
+        if saved_token:
+            self.api.set_token(saved_token)
+            
         self.loaded_apps = []
         self._search_after = None
         self._search_visible = False
@@ -927,7 +934,7 @@ class AppStoreApp(ctk.CTk):
         if self.api.token:
             self._show_profile_dialog()
         else:
-            client_id = self.config.get_client_id()
+            client_id = self.config_db.get_client_id()
             if not client_id:
                 self._show_client_id_dialog()
             else:
@@ -956,7 +963,7 @@ class AppStoreApp(ctk.CTk):
         def save():
             cid = entry.get().strip()
             if cid:
-                self.config.set_client_id(cid)
+                self.config_db.set_client_id(cid)
                 win.destroy()
                 self._show_login_dialog(cid)
             else:
@@ -972,13 +979,13 @@ class AppStoreApp(ctk.CTk):
         win.configure(fg_color="#0f0f1a")
         win.transient(self)
 
-        username = self.config.get_username() or "User"
+        username = self.config_db.get_username() or "User"
         ctk.CTkLabel(win, text=f"Logged in as:", font=ctk.CTkFont(size=12), text_color="#9aa0a6").pack(pady=(30, 0))
         ctk.CTkLabel(win, text=username, font=ctk.CTkFont(size=18, weight="bold"), text_color="#e8eaed").pack(pady=(0, 20))
 
         def logout():
             self.api.set_token(None)
-            self.config.clear_token()
+            self.config_db.clear_token()
             self._profile_btn.configure(text_color="#e8eaed")
             win.destroy()
             tk.messagebox.showinfo("Logout", "You have been logged out.")
@@ -989,7 +996,7 @@ class AppStoreApp(ctk.CTk):
         data = self.api.start_device_flow(client_id)
         if not data:
             tk.messagebox.showerror("Error", "Could not connect to GitHub. Is your Client ID valid and 'Device Flow' enabled?")
-            self.config.set_client_id(None) # Allow retry
+            self.config_db.set_client_id(None) # Allow retry
             return
 
         user_code = data["user_code"]
@@ -1029,15 +1036,15 @@ class AppStoreApp(ctk.CTk):
             token = self.api.poll_for_token(client_id, device_code, interval)
             if token:
                 self.api.set_token(token)
-                self.config.set_token(token)
+                self.config_db.set_token(token)
                 user = self.api.get_current_user()
                 if user:
-                    self.config.set_username(user.get("login"))
+                    self.config_db.set_username(user.get("login"))
                 
                 self.after(0, lambda: (
                     win.destroy(),
                     self._profile_btn.configure(text_color="#34a853"),
-                    tk.messagebox.showinfo("Login Success", f"Welcome, {self.config.get_username()}!")
+                    tk.messagebox.showinfo("Login Success", f"Welcome, {self.config_db.get_username()}!")
                 ))
 
         threading.Thread(target=wait, daemon=True).start()
