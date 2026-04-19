@@ -134,6 +134,7 @@ class GitHubAPI:
         self.token = None
         self.verified_repos = set()
         self.headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "Termux-AppStore"}
+        self._cache = {}
     def set_token(self, token):
         self.token = token
         if token: self.headers["Authorization"] = f"token {token}"
@@ -155,6 +156,7 @@ class GitHubAPI:
     def is_verified(self, full_name):
         return full_name.startswith("App-Store-tmx/") or full_name in self.verified_repos
     def search_by_topic(self, topic):
+        if f"topic_{topic}" in self._cache: return self._cache[f"topic_{topic}"]
         apps = []
         url = f"{GITHUB_API_BASE}/search/repositories?q=topic:{topic}"
         try:
@@ -169,9 +171,11 @@ class GitHubAPI:
                         "owner": item["owner"], "subdir": "", "repo_name": item["name"],
                         "icon_url": f"https://raw.githubusercontent.com/{item['full_name']}/main/icon.png"
                     })
+                self._cache[f"topic_{topic}"] = apps
         except: pass
         return apps
     def search_apps(self):
+        if "all_apps" in self._cache: return self._cache["all_apps"]
         all_apps = []
         repos = ["App-Store-tmx/Games", "App-Store-tmx/Apps"]
         for repo_full_name in repos:
@@ -198,6 +202,7 @@ class GitHubAPI:
         for a in all_apps:
             key = (a["full_name"], a["category"])
             if key not in seen: unique.append(a); seen.add(key)
+        self._cache["all_apps"] = unique
         return unique
     def get_readme(self, full_name):
         try:
@@ -273,7 +278,7 @@ class AppStoreApp(ctk.CTk):
         try:
             c = getattr(sf, "_parent_canvas", getattr(sf, "_canvas", None))
             if not c: return
-            m = 8
+            m = 5
             if event.num == 4: c.yview_scroll(-m, "units")
             elif event.num == 5: c.yview_scroll(m, "units")
             elif hasattr(event, "delta") and event.delta != 0: c.yview_scroll(int(-1 * (event.delta / 25)) * m, "units")
@@ -357,25 +362,33 @@ class AppStoreApp(ctk.CTk):
         self.downloads_view.grid(row=0, column=0, sticky="nsew"); self._apply_filter()
 
     def _render_downloads_list(self, history=None):
+        if history is None: history = self._download_history
+        if not self.downloads_view.winfo_viewable() and not hasattr(self, "_force_render_dl"): return
+        
         for w in self.downloads_view.winfo_children(): w.destroy()
         row = ctk.CTkFrame(self.downloads_view, fg_color="transparent"); row.pack(fill="x", padx=20, pady=(20, 10))
         ctk.CTkLabel(row, text="Download History", font=ctk.CTkFont(size=18, weight="bold")).pack(side="left")
-        if any(h["status"] in ["completed", "error"] for h in self._download_history): ctk.CTkButton(row, text="Clear Completed", width=120, height=28, fg_color="#333", command=self._clear_history).pack(side="right")
-        items = history if history is not None else self._download_history
-        if not items: ctk.CTkLabel(self.downloads_view, text="No download history.", text_color="#555").pack(pady=40); return
-        for data in reversed(items):
+        if any(h["status"] in ["completed", "error"] for h in self._download_history): 
+            ctk.CTkButton(row, text="Clear Completed", width=120, height=28, fg_color="#333", command=self._clear_history).pack(side="right")
+        
+        if not history: ctk.CTkLabel(self.downloads_view, text="No download history.", text_color="#555").pack(pady=40); return
+        for data in reversed(history):
             app, fn = data["app"], data["full_name"]
             card = ctk.CTkFrame(self.downloads_view, fg_color="#12122a", corner_radius=10); card.pack(fill="x", padx=20, pady=5)
-            main = ctk.CTkFrame(card, fg_color="transparent"); main.pack(fill="x", padx=15, pady=10)
+            main = ctk.CTkFrame(card, fg_color="transparent"); main.pack(fill="x", padx=15, pady=5)
             info = ctk.CTkFrame(main, fg_color="transparent"); info.pack(side="left", fill="both", expand=True)
             ctk.CTkLabel(info, text=app.get("name"), font=ctk.CTkFont(size=14, weight="bold"), anchor="w").pack(fill="x")
             st_color = {"completed": "#34a853", "error": "#ea4335", "pending": "#9aa0a6"}.get(data["status"], "#1a73e8")
             ctk.CTkLabel(info, text=data["status"].upper(), font=ctk.CTkFont(size=11, weight="bold"), text_color=st_color, anchor="w").pack(fill="x")
+            
             ctrls = ctk.CTkFrame(main, fg_color="transparent"); ctrls.pack(side="right")
             if data["status"] in ["pending", "downloading"]:
                 ctk.CTkButton(ctrls, text="Resume" if data.get("paused") else "Pause", width=70, height=28, corner_radius=14, command=lambda d=data: self._toggle_pause(d)).pack(side="left", padx=2)
                 ctk.CTkButton(ctrls, text="Cancel", width=70, height=28, corner_radius=14, fg_color="#421", command=lambda d=data: self._cancel_queued(d)).pack(side="left", padx=2)
-            elif data["status"] == "completed": ctk.CTkButton(ctrls, text="Launch", width=70, height=28, corner_radius=14, fg_color="#1e7e34", command=lambda a=app: self._launch(a)).pack(side="left", padx=2)
+            elif data["status"] == "completed":
+                ctk.CTkButton(ctrls, text="Uninstall", width=70, height=28, corner_radius=14, fg_color="#421", command=lambda a=app: self._uninstall(a)).pack(side="left", padx=2)
+                ctk.CTkButton(ctrls, text="Launch", width=70, height=28, corner_radius=14, fg_color="#1e7e34", command=lambda a=app: self._launch(a)).pack(side="left", padx=2)
+            
             if data["status"] in ["downloading", "installing"]:
                 p = ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color="#1a73e8"); p.pack(fill="x", padx=15, pady=(0, 10)); p.set(data["progress"]); data["ui_prog"] = p
 
@@ -392,14 +405,14 @@ class AppStoreApp(ctk.CTk):
             if data.get("proc"): 
                 try: os.kill(data["proc"].pid, signal.SIGCONT)
                 except: pass
-        self._apply_filter()
+        self._force_render_dl = True; self._apply_filter(); del self._force_render_dl
     def _cancel_queued(self, data):
         data["cancelled"] = True; data["status"] = "error"
         if data.get("proc"):
             try: data["proc"].terminate()
             except: pass
         if data in self._download_queue: self._download_queue.remove(data)
-        self._apply_filter()
+        self._force_render_dl = True; self._apply_filter(); del self._force_render_dl
 
     def _toggle_search(self):
         if self._search_visible: self._search_row.grid_forget(); self._search_visible = False
@@ -409,7 +422,7 @@ class AppStoreApp(ctk.CTk):
         self._search_after = self.after(280, self._apply_filter)
     def _apply_filter(self, _=None):
         q = self._search_entry.get().strip().lower()
-        if self.downloads_view.winfo_viewable():
+        if self.downloads_view.winfo_viewable() or hasattr(self, "_force_render_dl"):
             res = [h for h in self._download_history]
             if q: res = [h for h in res if q in h["app"].get("name", "").lower()]
             self._render_downloads_list(res); return
@@ -609,7 +622,7 @@ class AppStoreApp(ctk.CTk):
         fn = app.get("full_name")
         if any(h["full_name"] == fn and h["status"] in ["pending", "downloading", "installing"] for h in self._download_history): return
         task = {"full_name": fn, "app": app, "status": "pending", "progress": 0, "cancelled": False, "paused": False, "proc": None}
-        self._download_history.append(task); self._download_queue.append(task); self.show_downloads()
+        self._download_history.append(task); self._download_queue.append(task)
         with self._queue_lock:
             if not self._queue_worker_running: self._queue_worker_running = True; threading.Thread(target=self._queue_worker, daemon=True).start()
     def _queue_worker(self):
