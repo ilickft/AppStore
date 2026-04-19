@@ -68,9 +68,21 @@ class InstalledDB:
     def get(self, full_name):
         return self._db.get(full_name)
 
-    def add(self, full_name, name, path, pushed_at):
-        self._db[full_name] = {"name": name, "path": path, "pushed_at": pushed_at}
+    def add(self, full_name, name, path, pushed_at, app_data=None):
+        self._db[full_name] = {
+            "name": name, 
+            "path": path, 
+            "pushed_at": pushed_at,
+            "app_data": app_data
+        }
         self._save()
+
+    def get_all_installed(self):
+        # Return only items that are still on disk
+        return [
+            v["app_data"] for k, v in self._db.items() 
+            if v.get("app_data") and os.path.isdir(v.get("path", ""))
+        ]
 
     def remove(self, full_name):
         self._db.pop(full_name, None)
@@ -244,6 +256,18 @@ class GitHubAPI:
             return []
         return re.findall(r'!\[.*?\]\((.*?)\)', text)
 
+    def check_appstore_update(self):
+        try:
+            raw_url = "https://raw.githubusercontent.com/ilickft/AppStore/main/appstore.py"
+            r = requests.get(raw_url, timeout=5)
+            if r.status_code == 200:
+                match = re.search(r'APPSTORE_VERSION\s*=\s*"([^"]+)"', r.text)
+                if match:
+                    return match.group(1)
+        except Exception:
+            pass
+        return None
+
     def start_device_flow(self, client_id):
         try:
             r = requests.post(
@@ -400,14 +424,20 @@ class AppStoreApp(ctk.CTk):
         )
         self._games_tab.pack(side="left", padx=10, pady=5)
 
+        self._installed_tab = ctk.CTkButton(
+            self._tabs_row, text="Installed", width=80, height=30, corner_radius=15,
+            fg_color="transparent", text_color="#9aa0a6", font=ctk.CTkFont(size=13),
+            command=lambda: self._set_category("Installed")
+        )
+        self._installed_tab.pack(side="left", padx=10, pady=5)
+
     def _set_category(self, cat):
         self.current_category = cat
-        if cat == "Apps":
-            self._apps_tab.configure(fg_color="#1a73e8", text_color="#ffffff", font=ctk.CTkFont(size=13, weight="bold"))
-            self._games_tab.configure(fg_color="transparent", text_color="#9aa0a6", font=ctk.CTkFont(size=13))
-        else:
-            self._games_tab.configure(fg_color="#1a73e8", text_color="#ffffff", font=ctk.CTkFont(size=13, weight="bold"))
-            self._apps_tab.configure(fg_color="transparent", text_color="#9aa0a6", font=ctk.CTkFont(size=13))
+        for btn, name in [(self._apps_tab, "Apps"), (self._games_tab, "Games"), (self._installed_tab, "Installed")]:
+            if cat == name:
+                btn.configure(fg_color="#1a73e8", text_color="#ffffff", font=ctk.CTkFont(size=13, weight="bold"))
+            else:
+                btn.configure(fg_color="transparent", text_color="#9aa0a6", font=ctk.CTkFont(size=13))
         self._apply_filter()
 
     def _update_appstore(self):
@@ -537,8 +567,11 @@ class AppStoreApp(ctk.CTk):
     def _apply_filter(self, _=None):
         q = self._search_entry.get().strip().lower()
         
-        # Filter by category first
-        filtered = [a for a in self.loaded_apps if a.get("category") == self.current_category]
+        if self.current_category == "Installed":
+            filtered = self.db.get_all_installed()
+        else:
+            # Filter by category first
+            filtered = [a for a in self.loaded_apps if a.get("category") == self.current_category]
         
         # Then filter by query
         if q:
@@ -776,6 +809,21 @@ class AppStoreApp(ctk.CTk):
                 font=ctk.CTkFont(size=13), text_color="#9aa0a6", anchor="w"
             ).pack(fill="x", padx=16, pady=(10, 0))
 
+        self._install_progress_frame = ctk.CTkFrame(self.detail_view, fg_color="transparent")
+        
+        self._install_status_lbl = ctk.CTkLabel(
+            self._install_progress_frame, text="Installing...",
+            font=ctk.CTkFont(size=12, slant="italic"), text_color="#1a73e8"
+        )
+        self._install_status_lbl.pack(anchor="w", padx=2)
+        
+        self._install_progress = ctk.CTkProgressBar(
+            self._install_progress_frame, height=8, corner_radius=4,
+            progress_color="#1a73e8", fg_color="#1e1e40"
+        )
+        self._install_progress.pack(fill="x", pady=(2, 10))
+        self._install_progress.set(0)
+
         ctk.CTkFrame(self.detail_view, height=1, fg_color="#1e1e40").pack(fill="x", padx=16, pady=14)
 
         self._screenshots_outer = ctk.CTkFrame(self.detail_view, fg_color="transparent")
@@ -919,36 +967,23 @@ class AppStoreApp(ctk.CTk):
         install_path = os.path.join(INSTALL_BASE, name)
 
         action_label = "Updating" if is_update else "Installing"
-        win = ctk.CTkToplevel(self)
-        win.title(f"{action_label} {name}")
-        win.geometry("640x480")
-        win.configure(fg_color="#0f0f1a")
-
-        ctk.CTkLabel(
-            win, text=f"{action_label} {name}",
-            font=ctk.CTkFont(size=15, weight="bold"), text_color="#e8eaed"
-        ).pack(pady=(18, 8), padx=16, anchor="w")
-
-        log = ctk.CTkTextbox(
-            win, height=340,
-            font=ctk.CTkFont(size=11, family="monospace"),
-            fg_color="#0b0b1a", text_color="#8a9aaa", border_width=1, border_color="#1e1e40"
-        )
-        log.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         
-        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=15, pady=(0, 15))
-        
-        close_btn = ctk.CTkButton(btn_frame, text="Close", state="disabled", width=100, command=win.destroy)
-        close_btn.pack(side="right")
+        # Show progress UI
+        self._install_progress_frame.pack(fill="x", padx=16, after=self._primary_btn)
+        self._primary_btn.configure(state="disabled", text=action_label + "...")
+        self._install_status_lbl.configure(text=f"Preparing {name}...", text_color="#1a73e8")
+        self._install_progress.set(0)
 
-        def w(msg):
-            if win.winfo_exists():
-                self.after(0, lambda m=msg: (log.insert("end", m), log.see("end")))
+        def update_ui(status, progress):
+            if self.detail_view.winfo_exists():
+                self.after(0, lambda: (
+                    self._install_status_lbl.configure(text=status),
+                    self._install_progress.set(progress)
+                ))
 
         def run():
             try:
-                w(f"Preparing to {action_label.lower()} {name}...\n")
+                update_ui(f"Cleaning {name} folder...", 0.1)
                 if os.path.exists(install_path):
                     subprocess.run(["rm", "-rf", install_path], check=True)
                 
@@ -957,64 +992,43 @@ class AppStoreApp(ctk.CTk):
                     subprocess.run(["rm", "-rf", tmp_dir])
                 os.makedirs(tmp_dir)
                 
-                w(f"Fetching {name} from repository...\n")
-                
-                # Sparse checkout routine
+                update_ui("Cloning repository (sparse)...", 0.3)
                 subprocess.run(
                     ["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none", repo_url, tmp_dir],
-                    check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                    check=True, capture_output=True
                 )
+                
+                update_ui("Checking out application files...", 0.5)
                 subprocess.run(
                     ["git", "sparse-checkout", "set", subdir],
-                    cwd=tmp_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                    cwd=tmp_dir, check=True, capture_output=True
                 )
-                
-                proc_git = subprocess.Popen(
-                    ["git", "checkout"], cwd=tmp_dir,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                subprocess.run(
+                    ["git", "checkout"], cwd=tmp_dir, check=True, capture_output=True
                 )
-                for line in proc_git.stdout:
-                    w(line)
-                proc_git.wait()
-                
-                if proc_git.returncode != 0:
-                    w("\nError: Checkout failed.\n")
-                    return
                 
                 src = os.path.join(tmp_dir, subdir)
                 if not os.path.exists(src):
-                    w(f"\nError: Subdirectory {subdir} not found.\n")
-                    return
+                    raise Exception(f"Subdirectory {subdir} not found in repo.")
                 
-                w(f"Moving files to {install_path}...\n")
+                update_ui("Moving files to destination...", 0.7)
                 subprocess.run(["mv", src, install_path], check=True)
                 subprocess.run(["rm", "-rf", tmp_dir])
                     
                 script = os.path.join(install_path, "install.sh")
                 if os.path.exists(script):
-                    w("\nExecuting install.sh...\n")
-                    proc = subprocess.Popen(
-                        ["bash", "install.sh"], cwd=install_path,
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-                    )
-                    for line in proc.stdout:
-                        w(line)
-                    proc.wait()
-                    if proc.returncode == 0:
-                        self.db.add(full_name, name, install_path, pushed_at)
-                        w(f"\nSUCCESS: {name} {action_label.lower()}ed successfully!\n")
-                        self.after(500, lambda: self.show_detail(app))
-                    else:
-                        w(f"\nFAILED: Installation script exited with code {proc.returncode}\n")
-                else:
-                    self.db.add(full_name, name, install_path, pushed_at)
-                    w(f"\nNotice: No install.sh found. App installed to:\n{install_path}\n")
-                    self.after(500, lambda: self.show_detail(app))
+                    update_ui("Running install.sh...", 0.85)
+                    subprocess.run(["bash", "install.sh"], cwd=install_path, check=True, capture_output=True)
+                
+                self.db.add(full_name, name, install_path, pushed_at, app_data=app)
+                update_ui("Success!", 1.0)
+                self.after(1000, lambda: self.show_detail(app))
             except Exception as e:
-                w(f"\nCritical Error: {e}\n")
+                update_ui(f"Error: {str(e)[:40]}...", 0)
+                self.after(0, lambda: self._install_status_lbl.configure(text_color="#ff4b4b"))
+                self.after(3000, lambda: self._primary_btn.configure(state="normal", text=action_label))
             finally:
-                if win.winfo_exists():
-                    self.after(0, lambda: close_btn.configure(state="normal"))
+                self.after(5000, lambda: self._install_progress_frame.pack_forget() if self._install_progress_frame.winfo_exists() else None)
 
         threading.Thread(target=run, daemon=True).start()
 
