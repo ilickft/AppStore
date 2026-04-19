@@ -1,0 +1,27 @@
+# Termux Desktop Environment Specification
+
+## System Overview
+- **OS:** Android (via Termux)
+- **Architecture:** aarch64
+- **Desktop Environment:** XFCE4 (running via X11/proot-distro or native Termux X11)
+- **File Manager:** Thunar (supports Custom Actions in ~/.config/Thunar/uca.xml)
+- **Package Manager:** pkg (apt)
+
+## Development Capabilities
+- **Python:** 3.13+ installed with tkinter support (python-tkinter).
+- **GUI Preferences:** CustomTkinter (modern dark UI, pip install customtkinter).
+- **Core Utilities:** p7zip (7z), xdg-utils, update-desktop-database.
+- **Pathing:** All paths must be within /data/data/com.termux/files/home/.
+
+## App Integration Patterns
+- **Launchers:** .desktop files located in ~/.local/share/applications/
+- **Binaries:** Custom scripts/wrappers in /data/data/com.termux/files/usr/bin/
+- **Context Menus:** Thunar Custom Actions (UCA) for right-click functionality.
+- **Theming:** Forced "Dark Mode" is preferred for a modern aesthetic consistent with NanaZip.
+
+## Instructions for AI Developers
+When building tools for this environment:
+1. Use Python + CustomTkinter for standalone GUI tools to ensure reliability across X11 setups.
+2. Interface with CLI tools (like 7z) via subprocess for heavy logic.
+3. Always include an install.sh that handles dependency installation, .desktop file creation, and context menu integration.
+4. Avoid heavy GTK/Qt dependencies if a lighter Python alternative exists to prevent rendering issues (like "white windows").
