@@ -364,6 +364,7 @@ class AppStoreApp(ctk.CTk):
             self.api.set_token(saved_token)
             
         self.loaded_apps = []
+        self._apps_fetched = False
         self._search_after = None
         self._search_visible = False
         self._icon_cache = {}
@@ -431,20 +432,22 @@ class AppStoreApp(ctk.CTk):
         ).grid(row=0, column=0, padx=12, pady=10, sticky="w")
 
         icons_frame = ctk.CTkFrame(hdr, fg_color="transparent")
-        icons_frame.grid(row=0, column=2, padx=8, sticky="e")
+        icons_frame.grid(row=0, column=2, padx=10, sticky="e")
 
-        ibtn = dict(width=38, height=38, corner_radius=19,
+        # Professional header button style
+        ibtn = dict(width=34, height=34, corner_radius=17,
                     fg_color="transparent", hover_color="#1e1e40",
-                    font=ctk.CTkFont(size=19))
+                    font=ctk.CTkFont(size=17))
 
+        ctk.CTkButton(icons_frame, text="⌕", command=self._toggle_search, **ibtn).pack(side="left", padx=1)
+        ctk.CTkButton(icons_frame, text="⌂", command=self.show_home, **ibtn).pack(side="left", padx=1)
+        ctk.CTkButton(icons_frame, text="↻", command=self._force_refresh_apps, **ibtn).pack(side="left", padx=1)
+        
         self._update_btn = ctk.CTkButton(icons_frame, text="⤒", command=self._update_appstore, **ibtn)
-        self._update_btn.pack(side="left", padx=2)
-        ctk.CTkButton(icons_frame, text="⌂", command=self.show_home, **ibtn).pack(side="left", padx=2)
-        ctk.CTkButton(icons_frame, text="⌕", command=self._toggle_search, **ibtn).pack(side="left", padx=2)
-        self._profile_btn = ctk.CTkButton(
-            icons_frame, text="◉", command=self._login, **ibtn
-        )
-        self._profile_btn.pack(side="left", padx=(2, 4))
+        self._update_btn.pack(side="left", padx=1)
+        
+        self._profile_btn = ctk.CTkButton(icons_frame, text="◉", command=self._login, **ibtn)
+        self._profile_btn.pack(side="left", padx=(1, 4))
 
     def _build_tabs(self):
         self._tabs_row = ctk.CTkFrame(self, height=40, corner_radius=0, fg_color="#0f0f1a")
@@ -642,11 +645,20 @@ class AppStoreApp(ctk.CTk):
         self.detail_container.grid_forget()
         self.home_view.grid(row=0, column=0, sticky="nsew")
         self._tabs_row.grid(row=1, column=0, sticky="ew")
+        
+        if self._apps_fetched:
+            self._apply_filter()
+            return
+
         for w in self.home_view.winfo_children():
             w.destroy()
         self._tile_icon_labels.clear()
         self._show_loading_state()
         threading.Thread(target=self._fetch_apps, daemon=True).start()
+
+    def _force_refresh_apps(self):
+        self._apps_fetched = False
+        self.show_home()
 
     def _show_loading_state(self):
         f = ctk.CTkFrame(self.home_view, fg_color="transparent")
@@ -658,6 +670,7 @@ class AppStoreApp(ctk.CTk):
         self.api.fetch_verified_repos()
         apps = self.api.search_apps()
         self.loaded_apps = apps
+        self._apps_fetched = True
         self.after(0, lambda: self._apply_filter())
 
     def _render_home(self, apps):
