@@ -2,7 +2,9 @@
 
 A modern, professional application hub for the **Termux XFCE4** desktop environment. Built with Python and CustomTkinter, the AppStore provides a seamless way to browse, install, and manage open-source tools and games.
 
-![screenshot1.png](screenshot1.png)
+![Screenshot1](https://github.com/ilickft/AppStore/raw/main/screenshots/screenshot1.png)
+![Screenshot2](https://github.com/ilickft/AppStore/raw/main/screenshots/screenshot2.png)
+![Screenshot1](https://github.com/ilickft/AppStore/raw/main/screenshots/screenshot3.png)
 
 ## 🚀 Key Features
 
@@ -62,4 +64,3 @@ This project is specifically optimized for Termux X11 and XFCE4. It prioritizes 
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
