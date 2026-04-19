@@ -16,7 +16,7 @@ from io import BytesIO
 GITHUB_API_BASE = "https://api.github.com"
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
 APPSTORE_REPO_URL = "https://github.com/ilickft/AppStore/"
-APPSTORE_VERSION = "1.2.0"
+APPSTORE_VERSION = "1.2.1"
 INSTALL_BASE = os.path.expanduser("~/.appstore/apps")
 INSTALL_DB_PATH = os.path.expanduser("~/.appstore/installed.json")
 CONFIG_PATH = os.path.expanduser("~/.config/appstore/config.json")
@@ -106,7 +106,8 @@ class InstalledDB:
                     "owner": {"login": "local", "avatar_url": ""},
                     "subdir": name,
                     "repo_name": "local",
-                    "category": "Installed"
+                    "category": "Installed",
+                    "default_branch": "main"
                 }
             app_data["icon_path"] = os.path.join(path, "icon.png")
             app_data["readme_path"] = os.path.join(path, "readme.md")
@@ -243,7 +244,8 @@ class GitHubAPI:
                         "owner": item["owner"],
                         "subdir": "",
                         "repo_name": item["name"],
-                        "icon_url": f"https://raw.githubusercontent.com/{item['full_name']}/main/icon.png"
+                        "default_branch": item.get("default_branch", "main"),
+                        "icon_url": f"https://raw.githubusercontent.com/{item['full_name']}/{item.get('default_branch', 'main')}/icon.png"
                     }
                     apps.append(app)
         except Exception:
@@ -272,6 +274,7 @@ class GitHubAPI:
                                 "owner": {"login": repo_full_name.split('/')[0], "avatar_url": ""},
                                 "subdir": item["name"], "repo_name": repo_full_name.split('/')[1],
                                 "category": category,
+                                "default_branch": "main",
                                 "icon_url": f"https://raw.githubusercontent.com/{repo_full_name}/main/{item['name']}/icon.png"
                             }
                             all_apps.append(app)
@@ -313,13 +316,13 @@ class GitHubAPI:
             pass
         return None
 
-    def get_readme(self, full_name):
+    def get_readme(self, full_name, default_branch="main"):
         try:
             if ":" in full_name:
                 repo, subdir = full_name.split(":", 1)
-                url = f"{GITHUB_API_BASE}/repos/{repo}/readme/{subdir}"
+                url = f"{GITHUB_API_BASE}/repos/{repo}/readme/{subdir}?ref={default_branch}"
             else:
-                url = f"{GITHUB_API_BASE}/repos/{full_name}/readme"
+                url = f"{GITHUB_API_BASE}/repos/{full_name}/readme?ref={default_branch}"
             r = requests.get(url, headers=self.headers, timeout=5)
             if r.status_code == 200:
                 dl = r.json().get("download_url")
@@ -329,8 +332,8 @@ class GitHubAPI:
             pass
         return None
 
-    def get_readme_images(self, full_name):
-        text = self.get_readme(full_name)
+    def get_readme_images(self, full_name, default_branch="main"):
+        text = self.get_readme(full_name, default_branch)
         if not text:
             return []
         return re.findall(r'!\[.*?\]\((.*?)\)', text)
@@ -1319,10 +1322,10 @@ class AppStoreApp(ctk.CTk):
     def _load_screenshots(self, app):
         full_name = app.get("full_name", "")
         name = app.get("name", "")
-        subdir = app.get("subdir", "")
+        default_branch = app.get("default_branch", "main")
 
         all_urls = []
-        all_urls.extend(self.api.get_readme_images(full_name))
+        all_urls.extend(self.api.get_readme_images(full_name, default_branch))
 
         install_path = os.path.join(INSTALL_BASE, name)
         if os.path.exists(install_path):
@@ -1334,9 +1337,23 @@ class AppStoreApp(ctk.CTk):
                 pass
 
         if ":" in full_name:
-            repo, _ = full_name.split(":", 1)
+            repo, subdir_path = full_name.split(":", 1)
             try:
-                r = requests.get(f"{GITHUB_API_BASE}/repos/{repo}/contents/{subdir}",
+                r = requests.get(f"{GITHUB_API_BASE}/repos/{repo}/contents/{subdir_path}?ref={default_branch}",
+                                 headers=self.api.headers, timeout=5)
+                if r.status_code == 200:
+                    for item in r.json():
+                        fname = item.get("name", "").lower()
+                        if fname.startswith("screenshot") and fname.endswith((".png", ".jpg", ".jpeg")):
+                            dl_url = item.get("download_url")
+                            if dl_url not in all_urls:
+                                all_urls.append(dl_url)
+            except:
+                pass
+        else:
+            repo = full_name
+            try:
+                r = requests.get(f"{GITHUB_API_BASE}/repos/{repo}/contents/?ref={default_branch}",
                                  headers=self.api.headers, timeout=5)
                 if r.status_code == 200:
                     for item in r.json():
@@ -1786,11 +1803,12 @@ class AppStoreApp(ctk.CTk):
 
     def _check_app_update(self, app):
         full_name = app.get("full_name", "")
-        if ":" not in full_name:
-            return
-
-        repo, subdir = full_name.split(":", 1)
-        url = f"{GITHUB_API_BASE}/repos/{repo}/commits?path={subdir}&per_page=1"
+        if ":" in full_name:
+            repo, subdir = full_name.split(":", 1)
+            url = f"{GITHUB_API_BASE}/repos/{repo}/commits?path={subdir}&per_page=1"
+        else:
+            repo = full_name
+            url = f"{GITHUB_API_BASE}/repos/{repo}/commits?per_page=1"
 
         self._check_upd_btn.configure(state="disabled", text="Checking...")
 
@@ -1926,8 +1944,13 @@ class AppStoreApp(ctk.CTk):
                 subprocess.run(["rm", "-rf", tmp_dir])
                 return
 
+            if subdir:
+                clone_args = ["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none", repo_url, tmp_dir]
+            else:
+                clone_args = ["git", "clone", "--depth", "1", repo_url, tmp_dir]
+
             clone_proc = subprocess.Popen(
-                ["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none", repo_url, tmp_dir],
+                clone_args,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
             task["proc"] = clone_proc
@@ -1953,14 +1976,15 @@ class AppStoreApp(ctk.CTk):
                 subprocess.run(["rm", "-rf", tmp_dir])
                 raise Exception("git clone failed")
 
-            upd("Checking out", 0.45)
-            subprocess.run(
-                ["git", "sparse-checkout", "set", subdir],
-                cwd=tmp_dir, check=True, capture_output=True
-            )
-            subprocess.run(
-                ["git", "checkout"], cwd=tmp_dir, check=True, capture_output=True
-            )
+            if subdir:
+                upd("Checking out", 0.45)
+                subprocess.run(
+                    ["git", "sparse-checkout", "set", subdir],
+                    cwd=tmp_dir, check=True, capture_output=True
+                )
+                subprocess.run(
+                    ["git", "checkout"], cwd=tmp_dir, check=True, capture_output=True
+                )
 
             src = os.path.join(tmp_dir, subdir) if subdir else tmp_dir
             if not os.path.exists(src):
