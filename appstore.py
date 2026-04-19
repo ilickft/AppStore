@@ -9,6 +9,7 @@ import os
 import json
 import subprocess
 import signal
+import shutil
 from PIL import Image, ImageDraw
 from io import BytesIO
 
@@ -385,7 +386,7 @@ class AppStoreApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Termux AppStore")
-        self.geometry("600x400")
+        self.geometry("680x480")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         self.configure(fg_color="#0f0f1a")
@@ -712,6 +713,7 @@ class AppStoreApp(ctk.CTk):
         status_colors = {
             "Pending": "#9aa0a6",
             "Cloning": "#1a73e8",
+            "Downloading": "#1a73e8",
             "Paused": "#ff9800",
             "Checking out": "#1a73e8",
             "Installing": "#ff9800",
@@ -748,15 +750,13 @@ class AppStoreApp(ctk.CTk):
             btn_row = ctk.CTkFrame(card, fg_color="transparent")
             btn_row.pack(fill="x", padx=12, pady=(0, 10))
 
-            phase = task.get("phase")
-
             if status == "Pending":
                 ctk.CTkButton(btn_row, text="Cancel", width=80, height=26, corner_radius=13,
                               fg_color="#2a0a0a", hover_color="#4a1010", text_color="#ff6b6b",
                               border_width=1, border_color="#5a1a1a", font=ctk.CTkFont(size=11),
                               command=lambda t=task: self._cancel_task(t)).pack(side="left", padx=(0, 6))
 
-            elif status in ("Cloning", "Paused"):
+            elif status in ("Cloning", "Downloading", "Paused"):
                 if not paused:
                     ctk.CTkButton(btn_row, text="⏸ Pause", width=90, height=26, corner_radius=13,
                                   fg_color="#1e1e40", hover_color="#2a2a50", text_color="#7eb3ff",
@@ -797,6 +797,8 @@ class AppStoreApp(ctk.CTk):
                 task["paused"] = True
                 task["status"] = "Paused"
                 self._render_downloads_list()
+                if self._active_view == "detail" and getattr(self, "_current_viewing_fn", None) == task["full_name"]:
+                    self._refresh_action_area(task["app"])
             except Exception:
                 pass
 
@@ -806,8 +808,10 @@ class AppStoreApp(ctk.CTk):
             try:
                 os.kill(proc.pid, signal.SIGCONT)
                 task["paused"] = False
-                task["status"] = "Cloning"
+                task["status"] = "Cloning" if task.get("phase") == "clone" else "Installing"
                 self._render_downloads_list()
+                if self._active_view == "detail" and getattr(self, "_current_viewing_fn", None) == task["full_name"]:
+                    self._refresh_action_area(task["app"])
             except Exception:
                 pass
 
@@ -825,6 +829,8 @@ class AppStoreApp(ctk.CTk):
         task["error"] = True
         task["finished"] = False
         self._render_downloads_list()
+        if self._active_view == "detail" and getattr(self, "_current_viewing_fn", None) == task["full_name"]:
+            self.after(500, lambda: self._refresh_action_area(task["app"]))
 
     def _uninstall_from_history(self, app, task):
         full_name = app.get("full_name", "")
@@ -840,6 +846,8 @@ class AppStoreApp(ctk.CTk):
             self.db.remove(full_name)
             task["status"] = "Uninstalled"
             self._render_downloads_list()
+            if self._active_view == "detail" and getattr(self, "_current_viewing_fn", None) == full_name:
+                self._refresh_action_area(app)
         except Exception as e:
             tk.messagebox.showerror("Error", str(e))
 
@@ -1054,14 +1062,8 @@ class AppStoreApp(ctk.CTk):
         stars = app.get("stargazers_count", 0)
         forks = app.get("forks_count", 0)
         lang = app.get("language") or "N/A"
-        pushed_at = app.get("pushed_at", "")
         owner = app.get("owner", {})
-        html_url = app.get("html_url", "")
         is_verified = self.api.is_verified(full_name)
-        is_inst = self.db.is_installed(full_name)
-        needs_upd = self.db.needs_update(full_name, pushed_at) if is_inst else False
-        active_task = self._get_task(full_name)
-        is_active = active_task is not None
 
         if not is_verified:
             warn_frame = ctk.CTkFrame(self.detail_view, fg_color="#3c1a00", corner_radius=8)
@@ -1117,72 +1119,9 @@ class AppStoreApp(ctk.CTk):
 
         ctk.CTkFrame(self.detail_view, height=1, fg_color="#1e1e40").pack(fill="x", padx=16, pady=14)
 
-        btn_row = ctk.CTkFrame(self.detail_view, fg_color="transparent")
-        btn_row.pack(fill="x", padx=16, pady=(0, 6))
-
-        if is_active:
-            task_status = active_task.get("status", "Working")
-            self._primary_btn = ctk.CTkButton(
-                btn_row, text=f"{task_status}...",
-                width=150, height=42, corner_radius=21,
-                fg_color="#333", hover_color="#444", state="disabled",
-                font=ctk.CTkFont(size=14, weight="bold")
-            )
-            self._primary_btn.pack(side="left", padx=(0, 10))
-
-            ctk.CTkButton(
-                btn_row, text="Cancel",
-                width=110, height=42, corner_radius=21,
-                fg_color="#2a0a0a", hover_color="#4a1010",
-                text_color="#ff6b6b", border_width=1, border_color="#5a1a1a",
-                font=ctk.CTkFont(size=13),
-                command=lambda: self._cancel_task(active_task)
-            ).pack(side="left", padx=(0, 10))
-        else:
-            if not is_inst:
-                primary_text, primary_fg, primary_hv = "Install", "#1a73e8", "#1256b4"
-            elif needs_upd:
-                primary_text, primary_fg, primary_hv = "Update", "#e65c00", "#b34700"
-            else:
-                primary_text, primary_fg, primary_hv = "Launch", "#1e7e34", "#155a24"
-
-            self._primary_btn = ctk.CTkButton(
-                btn_row, text=primary_text,
-                width=150, height=42, corner_radius=21,
-                fg_color=primary_fg, hover_color=primary_hv,
-                font=ctk.CTkFont(size=14, weight="bold"),
-                command=lambda: self._primary_action(app, primary_text)
-            )
-            self._primary_btn.pack(side="left", padx=(0, 10))
-
-            if is_inst:
-                ctk.CTkButton(
-                    btn_row, text="Uninstall",
-                    width=110, height=42, corner_radius=21,
-                    fg_color="#2a0a0a", hover_color="#4a1010",
-                    text_color="#ff6b6b", border_width=1, border_color="#5a1a1a",
-                    font=ctk.CTkFont(size=13),
-                    command=lambda: self._uninstall(app)
-                ).pack(side="left", padx=(0, 10))
-
-                if not needs_upd:
-                    self._check_upd_btn = ctk.CTkButton(
-                        btn_row, text="Check for updates",
-                        width=140, height=42, corner_radius=21,
-                        fg_color="transparent", border_width=1, border_color="#2a2a50",
-                        text_color="#7eb3ff", font=ctk.CTkFont(size=13),
-                        command=lambda: self._check_app_update(app)
-                    )
-                    self._check_upd_btn.pack(side="left")
-
-        if html_url:
-            ctk.CTkButton(
-                btn_row, text="GitHub ↗",
-                width=90, height=42, corner_radius=21,
-                fg_color="transparent", border_width=1, border_color="#2a2a50",
-                text_color="#7eb3ff", font=ctk.CTkFont(size=12),
-                command=lambda: webbrowser.open(html_url)
-            ).pack(side="right")
+        self._btn_and_prog_container = ctk.CTkFrame(self.detail_view, fg_color="transparent")
+        self._btn_and_prog_container.pack(fill="x", padx=16, pady=(0, 6))
+        self._refresh_action_area(app)
 
         if desc:
             ctk.CTkLabel(
@@ -1190,23 +1129,6 @@ class AppStoreApp(ctk.CTk):
                 wraplength=820, justify="left",
                 font=ctk.CTkFont(size=13), text_color="#9aa0a6", anchor="w"
             ).pack(fill="x", padx=16, pady=(10, 0))
-
-        if is_active:
-            self._install_progress_frame = ctk.CTkFrame(self.detail_view, fg_color="transparent")
-            self._install_progress_frame.pack(fill="x", padx=16, pady=(8, 0))
-
-            self._install_status_lbl = ctk.CTkLabel(
-                self._install_progress_frame, text=active_task.get("status", ""),
-                font=ctk.CTkFont(size=12, slant="italic"), text_color="#1a73e8"
-            )
-            self._install_status_lbl.pack(anchor="w", padx=2)
-
-            self._install_progress = ctk.CTkProgressBar(
-                self._install_progress_frame, height=8, corner_radius=4,
-                progress_color="#1a73e8", fg_color="#1e1e40"
-            )
-            self._install_progress.pack(fill="x", pady=(2, 10))
-            self._install_progress.set(active_task.get("progress", 0))
 
         self._ss_sep_top = ctk.CTkFrame(self.detail_view, height=1, fg_color="#1e1e40")
         self._ss_sep_top.pack(fill="x", padx=16, pady=14)
@@ -1263,6 +1185,103 @@ class AppStoreApp(ctk.CTk):
 
         threading.Thread(target=self._load_reviews, args=(app,), daemon=True).start()
         ctk.CTkFrame(self.detail_view, height=30, fg_color="transparent").pack()
+
+    def _refresh_action_area(self, app):
+        for w in self._btn_and_prog_container.winfo_children():
+            w.destroy()
+
+        full_name = app.get("full_name", "")
+        is_inst = self.db.is_installed(full_name)
+        pushed_at = app.get("pushed_at", "")
+        needs_upd = self.db.needs_update(full_name, pushed_at) if is_inst else False
+        active_task = self._get_task(full_name)
+        is_active = active_task is not None
+
+        btn_row = ctk.CTkFrame(self._btn_and_prog_container, fg_color="transparent")
+        btn_row.pack(fill="x")
+
+        if is_active:
+            task_status = active_task.get("status", "Working")
+            self._primary_btn = ctk.CTkButton(
+                btn_row, text=f"{task_status}...",
+                width=150, height=42, corner_radius=21,
+                fg_color="#333", hover_color="#444", state="disabled",
+                font=ctk.CTkFont(size=14, weight="bold")
+            )
+            self._primary_btn.pack(side="left", padx=(0, 10))
+
+            ctk.CTkButton(
+                btn_row, text="Cancel",
+                width=110, height=42, corner_radius=21,
+                fg_color="#2a0a0a", hover_color="#4a1010",
+                text_color="#ff6b6b", border_width=1, border_color="#5a1a1a",
+                font=ctk.CTkFont(size=13),
+                command=lambda: self._cancel_task(active_task)
+            ).pack(side="left", padx=(0, 10))
+        else:
+            if not is_inst:
+                primary_text, primary_fg, primary_hv = "Install", "#1a73e8", "#1256b4"
+            elif needs_upd:
+                primary_text, primary_fg, primary_hv = "Update", "#e65c00", "#b34700"
+            else:
+                primary_text, primary_fg, primary_hv = "Launch", "#1e7e34", "#155a24"
+
+            self._primary_btn = ctk.CTkButton(
+                btn_row, text=primary_text,
+                width=150, height=42, corner_radius=21,
+                fg_color=primary_fg, hover_color=primary_hv,
+                font=ctk.CTkFont(size=14, weight="bold"),
+                command=lambda: self._primary_action(app, primary_text)
+            )
+            self._primary_btn.pack(side="left", padx=(0, 10))
+
+            if is_inst:
+                ctk.CTkButton(
+                    btn_row, text="Uninstall",
+                    width=110, height=42, corner_radius=21,
+                    fg_color="#2a0a0a", hover_color="#4a1010",
+                    text_color="#ff6b6b", border_width=1, border_color="#5a1a1a",
+                    font=ctk.CTkFont(size=13),
+                    command=lambda: self._uninstall(app)
+                ).pack(side="left", padx=(0, 10))
+
+                if not needs_upd:
+                    self._check_upd_btn = ctk.CTkButton(
+                        btn_row, text="Check for updates",
+                        width=140, height=42, corner_radius=21,
+                        fg_color="transparent", border_width=1, border_color="#2a2a50",
+                        text_color="#7eb3ff", font=ctk.CTkFont(size=13),
+                        command=lambda: self._check_app_update(app)
+                    )
+                    self._check_upd_btn.pack(side="left")
+
+        html_url = app.get("html_url", "")
+        if html_url:
+            ctk.CTkButton(
+                btn_row, text="GitHub ↗",
+                width=90, height=42, corner_radius=21,
+                fg_color="transparent", border_width=1, border_color="#2a2a50",
+                text_color="#7eb3ff", font=ctk.CTkFont(size=12),
+                command=lambda: webbrowser.open(html_url)
+            ).pack(side="right")
+
+        self._install_progress_frame = ctk.CTkFrame(self._btn_and_prog_container, fg_color="transparent")
+
+        self._install_status_lbl = ctk.CTkLabel(
+            self._install_progress_frame, text=active_task.get("status", "") if is_active else "",
+            font=ctk.CTkFont(size=12, slant="italic"), text_color="#1a73e8"
+        )
+        self._install_status_lbl.pack(anchor="w", padx=2)
+
+        self._install_progress = ctk.CTkProgressBar(
+            self._install_progress_frame, height=8, corner_radius=4,
+            progress_color="#1a73e8", fg_color="#1e1e40"
+        )
+        self._install_progress.pack(fill="x", pady=(2, 10))
+        self._install_progress.set(active_task.get("progress", 0) if is_active else 0)
+
+        if is_active:
+            self._install_progress_frame.pack(fill="x", pady=(8, 0))
 
     def _load_detail_icon(self, url):
         try:
@@ -1691,7 +1710,7 @@ class AppStoreApp(ctk.CTk):
                 pass
 
         if not text:
-            text = self.api.get_readme(full_name) or "No README found for this repository."
+            text = self.api.get_readme(full_name, app.get("default_branch", "main")) or "No README found for this repository."
         self.after(0, lambda: self._show_readme(text, loading_lbl))
 
     def _show_readme(self, text, loading_lbl):
@@ -1805,10 +1824,8 @@ class AppStoreApp(ctk.CTk):
         threading.Thread(target=run, daemon=True).start()
 
     def _primary_action(self, app, action):
-        if action == "Install":
-            self._install(app)
-        elif action == "Update":
-            self._install(app, is_update=True)
+        if action in ("Install", "Update"):
+            self._enqueue_install(app, is_update=(action == "Update"))
         elif action == "Launch":
             self._launch(app)
 
@@ -1840,6 +1857,9 @@ class AppStoreApp(ctk.CTk):
             start_worker = not self._queue_worker_running
             if start_worker:
                 self._queue_worker_running = True
+
+        if self._active_view == "detail" and getattr(self, "_current_viewing_fn", None) == full_name:
+            self._refresh_action_area(app)
 
         if start_worker:
             threading.Thread(target=self._queue_worker, daemon=True).start()
@@ -1883,7 +1903,8 @@ class AppStoreApp(ctk.CTk):
                 self.after(0, lambda s=status, p=progress: (
                     self._install_progress.set(p),
                     self._install_status_lbl.configure(text=s,
-                        text_color="#ff4b4b" if error else "#1a73e8")
+                        text_color="#ff4b4b" if error else "#1a73e8"),
+                    self._primary_btn.configure(text=f"{s}...") if hasattr(self, "_primary_btn") and self._primary_btn.winfo_exists() else None
                 ))
 
         try:
@@ -1910,6 +1931,17 @@ class AppStoreApp(ctk.CTk):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
             task["proc"] = clone_proc
+
+            def monitor_clone():
+                while task.get("proc") == clone_proc and clone_proc.poll() is None:
+                    if task.get("paused"):
+                        time.sleep(0.5)
+                        continue
+                    if task["progress"] < 0.4:
+                        self.after(0, lambda: upd("Downloading", task["progress"] + 0.02))
+                    time.sleep(0.5)
+            threading.Thread(target=monitor_clone, daemon=True).start()
+
             clone_proc.wait()
             task["proc"] = None
 
@@ -1930,15 +1962,16 @@ class AppStoreApp(ctk.CTk):
                 ["git", "checkout"], cwd=tmp_dir, check=True, capture_output=True
             )
 
-            src = os.path.join(tmp_dir, subdir)
+            src = os.path.join(tmp_dir, subdir) if subdir else tmp_dir
             if not os.path.exists(src):
                 raise Exception("Folder not found in repo")
 
-            upd("Installing", 0.7)
+            upd("Installing", 0.6)
             task["phase"] = "install"
 
             subprocess.run(["mv", src, install_path], check=True)
-            subprocess.run(["rm", "-rf", tmp_dir])
+            if os.path.exists(tmp_dir):
+                subprocess.run(["rm", "-rf", tmp_dir])
 
             script = os.path.join(install_path, "install.sh")
             if os.path.exists(script):
@@ -1947,6 +1980,17 @@ class AppStoreApp(ctk.CTk):
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE
                 )
                 task["proc"] = install_proc
+
+                def monitor_install():
+                    while task.get("proc") == install_proc and install_proc.poll() is None:
+                        if task.get("paused"):
+                            time.sleep(0.5)
+                            continue
+                        if task["progress"] < 0.95:
+                            self.after(0, lambda: upd("Installing", task["progress"] + 0.01))
+                        time.sleep(0.5)
+                threading.Thread(target=monitor_install, daemon=True).start()
+
                 install_proc.wait()
                 task["proc"] = None
 
@@ -1960,16 +2004,16 @@ class AppStoreApp(ctk.CTk):
 
             if (self._active_view == "detail"
                     and getattr(self, "_current_viewing_fn", None) == full_name):
-                self.after(800, lambda: self.show_detail(app))
+                self.after(800, lambda: self._refresh_action_area(app))
 
         except Exception as e:
             err_msg = str(e)[:50]
             task["error_msg"] = err_msg
             upd("Failed", 0.0, error=True)
             self.after(0, lambda: self._show_notification(f"✗  {name} failed", color="#c62828"))
-
-    def _install(self, app, is_update=False):
-        self._enqueue_install(app, is_update)
+            if (self._active_view == "detail"
+                    and getattr(self, "_current_viewing_fn", None) == full_name):
+                self.after(2000, lambda: self._refresh_action_area(app))
 
     def _launch(self, app):
         name = app.get("name", "")
