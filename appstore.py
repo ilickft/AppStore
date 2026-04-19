@@ -6,9 +6,8 @@ import webbrowser
 import time
 import re
 import os
-os.environ["PYSTRAY_BACKEND"] = "x11"
-import pystray
-from pystray import MenuItem as item
+import json
+import subprocess
 from PIL import Image, ImageDraw
 from io import BytesIO
 
