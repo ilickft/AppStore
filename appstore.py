@@ -25,10 +25,11 @@ os.makedirs(os.path.dirname(INSTALL_DB_PATH), exist_ok=True)
 os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
 
 
-def _circle_crop(img, size):
+def _round_sq_crop(img, size):
+    radius = size // 5
     img = img.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
     mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=255)
     out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     out.paste(img, mask=mask)
     return out
@@ -37,9 +38,10 @@ def _circle_crop(img, size):
 def _placeholder_icon(name, size):
     palette = ["#1a3a6a", "#2d1a6a", "#1a4a3a", "#4a2d1a", "#3a1a4a", "#1a4a4a", "#4a1a2e"]
     color = palette[sum(ord(c) for c in (name or "?")) % len(palette)]
+    radius = size // 5
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    draw.ellipse((0, 0, size - 1, size - 1), fill=color)
+    draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=color)
     letter = (name or "?")[0].upper()
     draw.text((size // 2 - size // 9, size // 2 - size // 7), letter, fill="#ffffff")
     return img
@@ -759,7 +761,7 @@ class AppStoreApp(ctk.CTk):
                 pil = self._icon_cache[url]
             else:
                 r = requests.get(url, timeout=5)
-                pil = _circle_crop(Image.open(BytesIO(r.content)), 64)
+                pil = _round_sq_crop(Image.open(BytesIO(r.content)), 64)
                 self._icon_cache[url] = pil
             ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(64, 64))
             self._ctk_img_refs[full_name] = ctk_img
@@ -772,7 +774,7 @@ class AppStoreApp(ctk.CTk):
             if path in self._icon_cache:
                 pil = self._icon_cache[path]
             else:
-                pil = _circle_crop(Image.open(path), 64)
+                pil = _round_sq_crop(Image.open(path), 64)
                 self._icon_cache[path] = pil
             ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(64, 64))
             self._ctk_img_refs[full_name] = ctk_img
@@ -897,7 +899,17 @@ class AppStoreApp(ctk.CTk):
                 text_color="#ff6b6b", border_width=1, border_color="#5a1a1a",
                 font=ctk.CTkFont(size=13),
                 command=lambda: self._uninstall(app)
-            ).pack(side="left")
+            ).pack(side="left", padx=(0, 10))
+
+            if not needs_upd:
+                self._check_upd_btn = ctk.CTkButton(
+                    btn_row, text="Check for updates",
+                    width=140, height=42, corner_radius=21,
+                    fg_color="transparent", border_width=1, border_color="#2a2a50",
+                    text_color="#7eb3ff", font=ctk.CTkFont(size=13),
+                    command=lambda: self._check_app_update(app)
+                )
+                self._check_upd_btn.pack(side="left")
 
         if html_url:
             ctk.CTkButton(
@@ -994,7 +1006,7 @@ class AppStoreApp(ctk.CTk):
                 pil = self._icon_cache[url]
             else:
                 r = requests.get(url, timeout=5)
-                pil = _circle_crop(Image.open(BytesIO(r.content)), 82)
+                pil = _round_sq_crop(Image.open(BytesIO(r.content)), 82)
                 self._icon_cache[url] = pil
             ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(82, 82))
             self._detail_icon_ref = ctk_img
@@ -1010,7 +1022,7 @@ class AppStoreApp(ctk.CTk):
             if path in self._icon_cache:
                 pil = self._icon_cache[path]
             else:
-                pil = _circle_crop(Image.open(path), 82)
+                pil = _round_sq_crop(Image.open(path), 82)
                 self._icon_cache[path] = pil
             ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(82, 82))
             self._detail_icon_ref = ctk_img
@@ -1270,7 +1282,7 @@ class AppStoreApp(ctk.CTk):
     def _load_review_avatar(self, label, url, ref_id):
         try:
             r = requests.get(url, timeout=5)
-            pil = _circle_crop(Image.open(BytesIO(r.content)), 28)
+            pil = _round_sq_crop(Image.open(BytesIO(r.content)), 28)
             ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(28, 28))
             self._ctk_img_refs[ref_id] = ctk_img
             self.after(0, lambda: label.configure(image=ctk_img) if label.winfo_exists() else None)
@@ -1412,6 +1424,45 @@ class AppStoreApp(ctk.CTk):
         tb.pack(fill="both", padx=10, pady=10)
         tb.insert("1.0", text)
         tb.configure(state="disabled")
+
+    def _check_app_update(self, app):
+        full_name = app.get("full_name", "")
+        if ":" not in full_name:
+            return
+            
+        repo, subdir = full_name.split(":", 1)
+        url = f"{GITHUB_API_BASE}/repos/{repo}/commits?path={subdir}&per_page=1"
+        
+        self._check_upd_btn.configure(state="disabled", text="Checking...")
+        
+        def run():
+            try:
+                r = requests.get(url, headers=self.api.headers, timeout=10)
+                if r.status_code == 200:
+                    data = r.json()
+                    if data:
+                        latest_pushed = data[0]["commit"]["committer"]["date"]
+                        if self.db.needs_update(full_name, latest_pushed):
+                            app["pushed_at"] = latest_pushed # Update object for refresh
+                            self.after(0, lambda: (
+                                tk.messagebox.showinfo("Update Available", f"A new version of {app.get('name')} is available!"),
+                                self.show_detail(app)
+                            ))
+                        else:
+                            self.after(0, lambda: (
+                                tk.messagebox.showinfo("No Updates", f"{app.get('name')} is already up to date."),
+                                self._check_upd_btn.configure(state="normal", text="Check for updates")
+                                if self._check_upd_btn.winfo_exists() else None
+                            ))
+                    else:
+                        self.after(0, lambda: self._check_upd_btn.configure(state="normal", text="Check for updates"))
+                else:
+                    self.after(0, lambda: self._check_upd_btn.configure(state="normal", text="Check for updates"))
+            except:
+                self.after(0, lambda: self._check_upd_btn.configure(state="normal", text="Check for updates") 
+                           if self._check_upd_btn.winfo_exists() else None)
+        
+        threading.Thread(target=run, daemon=True).start()
 
     def _primary_action(self, app, action):
         if action == "Install":
