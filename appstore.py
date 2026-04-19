@@ -12,7 +12,7 @@ from PIL import Image, ImageTk
 from io import BytesIO
 
 # --- Configuration ---
-TOPIC = "termux-appstore-ready"
+SEARCH_QUERY = "topic:termux-desktop+OR+topic:termux-x11"
 GITHUB_API_BASE = "https://api.github.com"
 CLIENT_ID = "Iv1.b08f870e6c6c180a" # Placeholder
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
@@ -40,7 +40,7 @@ class GitHubAPI:
         except:
             return []
 
-    def search_apps(self, query=f"topic:{TOPIC}"):
+    def search_apps(self, query=SEARCH_QUERY):
         apps = []
         # 1. Get apps from verified list first to ensure they are present
         for repo_name in self.verified_repos:
@@ -215,7 +215,7 @@ class AppStoreApp(ctk.CTk):
         super().__init__()
 
         self.title("Termux AppStore")
-        self.geometry("1000x700")
+        self.geometry("800x600")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
@@ -229,32 +229,32 @@ class AppStoreApp(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
 
         # Sidebar
-        self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
+        self.sidebar = ctk.CTkFrame(self, width=160, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         
-        self.logo_label = ctk.CTkLabel(self.sidebar, text="Termux AppStore", font=ctk.CTkFont(size=20, weight="bold"))
-        self.logo_label.pack(padx=20, pady=(20, 10))
+        self.logo_label = ctk.CTkLabel(self.sidebar, text="AppStore", font=ctk.CTkFont(size=18, weight="bold"))
+        self.logo_label.pack(padx=10, pady=(20, 10))
 
-        self.home_btn = ctk.CTkButton(self.sidebar, text="Home", command=self.show_home)
-        self.home_btn.pack(padx=20, pady=10)
+        self.home_btn = ctk.CTkButton(self.sidebar, text="Home", height=32, command=self.show_home)
+        self.home_btn.pack(padx=10, pady=5)
 
-        self.login_btn = ctk.CTkButton(self.sidebar, text="Login with GitHub", command=self.login_github)
-        self.login_btn.pack(padx=20, pady=10)
+        self.login_btn = ctk.CTkButton(self.sidebar, text="Login", height=32, command=self.login_github)
+        self.login_btn.pack(padx=10, pady=5)
 
-        self.update_btn = ctk.CTkButton(self.sidebar, text="Update AppStore", command=self.updater.update, fg_color="green", hover_color="darkgreen")
-        self.update_btn.pack(padx=20, pady=10)
+        self.update_btn = ctk.CTkButton(self.sidebar, text="Update", height=32, command=self.updater.update, fg_color="green", hover_color="darkgreen")
+        self.update_btn.pack(padx=10, pady=5)
 
         # Main Content Area
         self.content_frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
-        self.content_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        self.content_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
         self.content_frame.grid_columnconfigure(0, weight=1)
         self.content_frame.grid_rowconfigure(1, weight=1)
 
         # Search Bar
         self.search_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        self.search_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(0, 10))
+        self.search_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(0, 5))
         
-        self.search_entry = ctk.CTkEntry(self.search_frame, placeholder_text="Search apps...", height=35)
+        self.search_entry = ctk.CTkEntry(self.search_frame, placeholder_text="Search...", height=30)
         self.search_entry.pack(fill="x", side="left", expand=True)
         self.search_entry.bind("<KeyRelease>", self.filter_apps)
 
@@ -265,7 +265,7 @@ class AppStoreApp(ctk.CTk):
 
     def show_home(self):
         self.main_frame.grid(row=1, column=0, sticky="nsew")
-        self.search_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(0, 10)) # Re-show search
+        self.search_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(0, 5)) # Re-show search
         if hasattr(self, 'details_frame'):
             self.details_frame.grid_forget()
 
@@ -277,10 +277,10 @@ class AppStoreApp(ctk.CTk):
 
     def show_skeleton(self):
         # Create skeleton cards
-        for i in range(8):
+        for i in range(9):
             row, col = divmod(i, 3)
-            card = ctk.CTkFrame(self.main_frame, width=210, height=250, fg_color="#2b2b2b")
-            card.grid(row=row, column=col, padx=10, pady=10)
+            card = ctk.CTkFrame(self.main_frame, width=190, height=220, fg_color="#2b2b2b")
+            card.grid(row=row, column=col, padx=5, pady=5)
             card.grid_propagate(False)
 
     def load_apps(self):
@@ -301,20 +301,20 @@ class AppStoreApp(ctk.CTk):
 
         row, col = 0, 0
         for app in apps:
-            card = ctk.CTkFrame(self.main_frame, width=210, height=250)
-            card.grid(row=row, column=col, padx=10, pady=10)
+            card = ctk.CTkFrame(self.main_frame, width=190, height=220)
+            card.grid(row=row, column=col, padx=5, pady=5)
             card.grid_propagate(False)
 
-            name_label = ctk.CTkLabel(card, text=app["name"], font=ctk.CTkFont(size=14, weight="bold"))
-            name_label.pack(pady=(10, 5))
+            name_label = ctk.CTkLabel(card, text=app["name"], font=ctk.CTkFont(size=13, weight="bold"))
+            name_label.pack(pady=(8, 4))
 
             desc = app["description"] if app["description"] else "No description"
-            if len(desc) > 80: desc = desc[:77] + "..."
-            desc_label = ctk.CTkLabel(card, text=desc, wraplength=190, font=ctk.CTkFont(size=12))
-            desc_label.pack(padx=10, pady=5)
+            if len(desc) > 70: desc = desc[:67] + "..."
+            desc_label = ctk.CTkLabel(card, text=desc, wraplength=170, font=ctk.CTkFont(size=11))
+            desc_label.pack(padx=8, pady=4)
 
-            view_btn = ctk.CTkButton(card, text="Details", command=lambda a=app: self.show_details(a))
-            view_btn.pack(side="bottom", pady=10)
+            view_btn = ctk.CTkButton(card, text="Details", height=28, command=lambda a=app: self.show_details(a))
+            view_btn.pack(side="bottom", pady=8)
 
             col += 1
             if col > 2:
