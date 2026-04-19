@@ -201,7 +201,8 @@ class GitHubAPI:
                                 "owner": {"login": repo_full_name.split('/')[0], "avatar_url": ""},
                                 "subdir": item["name"],
                                 "repo_name": repo_full_name.split('/')[1],
-                                "category": category
+                                "category": category,
+                                "icon_url": f"https://raw.githubusercontent.com/{repo_full_name}/main/{item['name']}/icon.png"
                             }
                             apps.append(app)
                 elif r.status_code == 403:
@@ -318,6 +319,33 @@ class AppStoreApp(ctk.CTk):
         self._build_body()
         self.show_home()
         threading.Thread(target=self._check_updates_silent, daemon=True).start()
+
+        self.bind_all("<Button-4>", self._on_mousewheel)
+        self.bind_all("<Button-5>", self._on_mousewheel)
+        self.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        # Determine the currently active scrollable frame
+        scroll_frame = None
+        if self.home_view.winfo_viewable():
+            scroll_frame = self.home_view
+        elif self.detail_view.winfo_viewable():
+            scroll_frame = self.detail_view
+            
+        if not scroll_frame:
+            return
+
+        direction = 0
+        if event.num == 4 or (hasattr(event, "delta") and event.delta > 0):
+            direction = -2
+        elif event.num == 5 or (hasattr(event, "delta") and event.delta < 0):
+            direction = 2
+            
+        if direction != 0:
+            try:
+                scroll_frame._parent_canvas.yview_scroll(direction, "units")
+            except Exception:
+                pass
 
     def _check_updates_silent(self):
         remote_v = self.api.check_appstore_update()
@@ -483,7 +511,7 @@ class AppStoreApp(ctk.CTk):
 
     def _build_body(self):
         self.body = ctk.CTkFrame(self, fg_color="#0f0f1a", corner_radius=0)
-        self.body.grid(row=2, column=0, sticky="nsew")
+        self.body.grid(row=3, column=0, sticky="nsew")
         self.body.grid_columnconfigure(0, weight=1)
         self.body.grid_rowconfigure(0, weight=1)
 
@@ -497,7 +525,7 @@ class AppStoreApp(ctk.CTk):
             self._search_row.grid_forget()
             self._search_visible = False
         else:
-            self._search_row.grid(row=1, column=0, sticky="ew")
+            self._search_row.grid(row=2, column=0, sticky="ew")
             self._search_visible = True
             self._search_entry.focus()
 
@@ -572,7 +600,7 @@ class AppStoreApp(ctk.CTk):
     def _make_tile(self, parent, app, row, col):
         full_name = app.get("full_name", "")
         name = app.get("name", "")
-        avatar_url = app.get("owner", {}).get("avatar_url")
+        icon_url = app.get("icon_url")
 
         tile = ctk.CTkFrame(parent, fg_color="transparent", cursor="hand2")
         tile.grid(row=row, column=col, padx=8, pady=14, sticky="n")
@@ -595,9 +623,9 @@ class AppStoreApp(ctk.CTk):
         for widget in (tile, icon_lbl, name_lbl):
             widget.bind("<Button-1>", lambda e, a=app: self.show_detail(a))
 
-        if avatar_url:
+        if icon_url:
             threading.Thread(
-                target=self._load_tile_icon, args=(full_name, avatar_url), daemon=True
+                target=self._load_tile_icon, args=(full_name, icon_url), daemon=True
             ).start()
 
     def _load_tile_icon(self, full_name, url):
@@ -673,9 +701,10 @@ class AppStoreApp(ctk.CTk):
         self._detail_icon_lbl = ctk.CTkLabel(top_row, image=ctk_ph, text="")
         self._detail_icon_lbl.pack(side="left", padx=(0, 18))
 
-        if avatar_url:
+        icon_url = app.get("icon_url")
+        if icon_url:
             threading.Thread(
-                target=self._load_detail_icon, args=(avatar_url,), daemon=True
+                target=self._load_detail_icon, args=(icon_url,), daemon=True
             ).start()
 
         info_col = ctk.CTkFrame(top_row, fg_color="transparent")
@@ -1008,6 +1037,12 @@ class AppStoreApp(ctk.CTk):
             return
         try:
             install_path = os.path.join(INSTALL_BASE, name)
+            
+            # Run uninstall.sh if it exists
+            un_script = os.path.join(install_path, "uninstall.sh")
+            if os.path.exists(un_script):
+                subprocess.run(["bash", "uninstall.sh"], cwd=install_path)
+                
             subprocess.run(["rm", "-rf", install_path], check=True)
             self.db.remove(full_name)
             self.show_detail(app)
