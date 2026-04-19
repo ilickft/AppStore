@@ -201,7 +201,7 @@ class AppStoreApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Termux AppStore")
-        self.geometry("880x640")
+        self.geometry("800x600")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         self.configure(fg_color="#0f0f1a")
