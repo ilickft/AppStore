@@ -354,7 +354,6 @@ class AppStoreApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
         self.configure(fg_color="#0f0f1a")
 
-        # Set window icon
         icon_path = os.path.join(os.path.dirname(__file__), "AppStore.png")
         if os.path.exists(icon_path):
             try:
@@ -367,7 +366,6 @@ class AppStoreApp(ctk.CTk):
         self.config_db = ConfigDB()
         self.db = InstalledDB()
         
-        # Load saved token
         saved_token = self.config_db.get_token()
         if saved_token:
             self.api.set_token(saved_token)
@@ -400,25 +398,21 @@ class AppStoreApp(ctk.CTk):
         self.bind_all("<MouseWheel>", self._on_mousewheel)
 
     def _on_mousewheel(self, event):
-        # Determine active scrollable frame
-        # On Windows, we check if home_view is visible
         if self.home_view.winfo_viewable():
             sf = self.home_view
         else:
             sf = self.detail_view
             
         try:
-            # CTkScrollableFrame internal canvas
             canvas = getattr(sf, "_parent_canvas", getattr(sf, "_canvas", None))
             if not canvas:
                 return
 
-            if event.num == 4: # Linux/X11 Up
+            if event.num == 4:
                 canvas.yview_scroll(-3, "units")
-            elif event.num == 5: # Linux/X11 Down
+            elif event.num == 5:
                 canvas.yview_scroll(3, "units")
-            elif hasattr(event, "delta") and event.delta != 0: # Windows/macOS
-                # Windows delta is 120 per notch. Scroll 3-4 lines per notch.
+            elif hasattr(event, "delta") and event.delta != 0:
                 amount = int(-1 * (event.delta / 30))
                 canvas.yview_scroll(amount, "units")
         except:
@@ -446,7 +440,6 @@ class AppStoreApp(ctk.CTk):
         icons_frame = ctk.CTkFrame(hdr, fg_color="transparent")
         icons_frame.grid(row=0, column=2, padx=10, sticky="e")
 
-        # Professional header button style
         ibtn = dict(width=34, height=34, corner_radius=17,
                     fg_color="transparent", hover_color="#1e1e40",
                     font=ctk.CTkFont(size=17))
@@ -662,7 +655,6 @@ class AppStoreApp(ctk.CTk):
             prog.pack(fill="x", padx=15, pady=(0, 15))
             prog.set(data["progress"])
             
-            # Store refs to update them later
             data["ui_prog"] = prog
             data["ui_status"] = status_lbl
 
@@ -686,10 +678,8 @@ class AppStoreApp(ctk.CTk):
         if self.current_category == "Installed":
             filtered = self.db.get_all_installed()
         else:
-            # Filter by category first
             filtered = [a for a in self.loaded_apps if a.get("category") == self.current_category]
         
-        # Then filter by query
         if q:
             filtered = [
                 a for a in filtered
@@ -927,6 +917,12 @@ class AppStoreApp(ctk.CTk):
         btn_row = ctk.CTkFrame(self.detail_view, fg_color="transparent")
         btn_row.pack(fill="x", padx=16, pady=(0, 6))
 
+        is_active = False
+        if full_name in self._active_installs:
+            data = self._active_installs[full_name]
+            if not data.get("finished") and not data.get("error"):
+                is_active = True
+
         if not is_inst:
             primary_text, primary_fg, primary_hv = "Install", "#1a73e8", "#1256b4"
         elif needs_upd:
@@ -943,25 +939,38 @@ class AppStoreApp(ctk.CTk):
         )
         self._primary_btn.pack(side="left", padx=(0, 10))
 
-        if is_inst:
+        if is_active:
+            action_lbl = "Updating..." if is_inst else "Installing..."
+            self._primary_btn.configure(state="disabled", text=action_lbl)
+
             ctk.CTkButton(
-                btn_row, text="Uninstall",
+                btn_row, text="Cancel",
                 width=110, height=42, corner_radius=21,
                 fg_color="#2a0a0a", hover_color="#4a1010",
                 text_color="#ff6b6b", border_width=1, border_color="#5a1a1a",
                 font=ctk.CTkFont(size=13),
-                command=lambda: self._uninstall(app)
+                command=lambda: self._cancel_install(app)
             ).pack(side="left", padx=(0, 10))
+        else:
+            if is_inst:
+                ctk.CTkButton(
+                    btn_row, text="Uninstall",
+                    width=110, height=42, corner_radius=21,
+                    fg_color="#2a0a0a", hover_color="#4a1010",
+                    text_color="#ff6b6b", border_width=1, border_color="#5a1a1a",
+                    font=ctk.CTkFont(size=13),
+                    command=lambda: self._uninstall(app)
+                ).pack(side="left", padx=(0, 10))
 
-            if not needs_upd:
-                self._check_upd_btn = ctk.CTkButton(
-                    btn_row, text="Check for updates",
-                    width=140, height=42, corner_radius=21,
-                    fg_color="transparent", border_width=1, border_color="#2a2a50",
-                    text_color="#7eb3ff", font=ctk.CTkFont(size=13),
-                    command=lambda: self._check_app_update(app)
-                )
-                self._check_upd_btn.pack(side="left")
+                if not needs_upd:
+                    self._check_upd_btn = ctk.CTkButton(
+                        btn_row, text="Check for updates",
+                        width=140, height=42, corner_radius=21,
+                        fg_color="transparent", border_width=1, border_color="#2a2a50",
+                        text_color="#7eb3ff", font=ctk.CTkFont(size=13),
+                        command=lambda: self._check_app_update(app)
+                    )
+                    self._check_upd_btn.pack(side="left")
 
         if html_url:
             ctk.CTkButton(
@@ -994,11 +1003,9 @@ class AppStoreApp(ctk.CTk):
         self._install_progress.pack(fill="x", pady=(2, 10))
         self._install_progress.set(0)
 
-        # Re-attach progress UI if active
-        if full_name in self._active_installs:
+        if is_active:
             data = self._active_installs[full_name]
             self._install_progress_frame.pack(fill="x", padx=16, after=self._primary_btn)
-            self._primary_btn.configure(state="disabled", text="Installing...")
             self._install_status_lbl.configure(text=data["status"])
             self._install_progress.set(data["progress"])
 
@@ -1033,7 +1040,6 @@ class AppStoreApp(ctk.CTk):
 
         self._readme_frame = ctk.CTkFrame(self.detail_view, fg_color="#0b0b1a", corner_radius=10)
 
-        # Reviews Section
         self._reviews_outer = ctk.CTkFrame(self.detail_view, fg_color="transparent")
         self._reviews_outer.pack(fill="x", padx=16, pady=(16, 20))
         
@@ -1100,10 +1106,8 @@ class AppStoreApp(ctk.CTk):
         
         all_urls = []
         
-        # 1. Check README images
         all_urls.extend(self.api.get_readme_images(full_name))
         
-        # 2. Check local root folder if installed
         install_path = os.path.join(INSTALL_BASE, name)
         if os.path.exists(install_path):
             try:
@@ -1112,7 +1116,6 @@ class AppStoreApp(ctk.CTk):
                         all_urls.append(os.path.join(install_path, f))
             except: pass
             
-        # 3. Check GitHub root folder contents
         if ":" in full_name:
             repo, _ = full_name.split(":", 1)
             try:
@@ -1127,7 +1130,6 @@ class AppStoreApp(ctk.CTk):
                                 all_urls.append(dl_url)
             except: pass
 
-        # Filter duplicates and limit
         seen = set()
         unique_urls = []
         for u in all_urls:
@@ -1175,7 +1177,6 @@ class AppStoreApp(ctk.CTk):
             else:
                 img = Image.open(url)
             
-            # Basic validation: must be reasonably sized to be a screenshot
             if img.width < 100 or img.height < 100:
                 raise Exception("Too small")
 
@@ -1190,9 +1191,7 @@ class AppStoreApp(ctk.CTk):
     def _on_ss_fail(self):
         self._loaded_ss_count = getattr(self, "_loaded_ss_count", 0)
         self._total_ss_attempted = getattr(self, "_total_ss_attempted", 0)
-        # If all attempted images failed, hide the section
         if hasattr(self, "_ss_scroll") and not self._ss_scroll.winfo_children():
-            # We check again after some time or on last fail
             pass
 
     def _place_screenshot(self, ctk_img, parent):
@@ -1259,7 +1258,6 @@ class AppStoreApp(ctk.CTk):
             header = ctk.CTkFrame(card, fg_color="transparent")
             header.pack(fill="x", padx=10, pady=(10, 5))
             
-            # Left: Avatar + Name
             left = ctk.CTkFrame(header, fg_color="transparent")
             left.pack(side="left")
             
@@ -1274,7 +1272,6 @@ class AppStoreApp(ctk.CTk):
             
             ctk.CTkLabel(left, text=rev["user"], font=ctk.CTkFont(size=13, weight="bold"), text_color="#e8eaed").pack(side="left")
             
-            # Right: Tools (Edit, Delete, Reply) + Stars
             right = ctk.CTkFrame(header, fg_color="transparent")
             right.pack(side="right")
             
@@ -1287,10 +1284,8 @@ class AppStoreApp(ctk.CTk):
             tbtn = dict(width=24, height=24, corner_radius=12, fg_color="transparent", 
                         hover_color="#1a1a30", font=ctk.CTkFont(size=14))
             
-            # Reply is for everyone
             ctk.CTkButton(tools, text="↩", command=lambda r=rev: self._show_reply_dialog(app, r), **tbtn).pack(side="left", padx=2)
             
-            # Edit/Delete only for owner
             if rev["login"] == my_login:
                 ctk.CTkButton(tools, text="✎", command=lambda r=rev: self._show_write_review_dialog(app, edit_rev=r), **tbtn).pack(side="left", padx=2)
                 ctk.CTkButton(tools, text="🗑", text_color="#ff4b4b", command=lambda r=rev: self._delete_review(app, r), **tbtn).pack(side="left", padx=2)
@@ -1534,7 +1529,7 @@ class AppStoreApp(ctk.CTk):
                     if data:
                         latest_pushed = data[0]["commit"]["committer"]["date"]
                         if self.db.needs_update(full_name, latest_pushed):
-                            app["pushed_at"] = latest_pushed # Update object for refresh
+                            app["pushed_at"] = latest_pushed
                             self.after(0, lambda: (
                                 tk.messagebox.showinfo("Update Available", f"A new version of {app.get('name')} is available!"),
                                 self.show_detail(app)
@@ -1562,8 +1557,9 @@ class AppStoreApp(ctk.CTk):
         data = self._active_installs[full_name]
         data["status"] = status
         data["progress"] = progress
+        data["finished"] = finished
+        data["error"] = error
         
-        # 1. Update Downloads View if visible
         if self.downloads_view.winfo_ismapped():
             if "ui_prog" in data and data["ui_prog"].winfo_exists():
                 self.after(0, lambda: (
@@ -1571,7 +1567,6 @@ class AppStoreApp(ctk.CTk):
                     data["ui_status"].configure(text=status, text_color="#ff4b4b" if error else "#1a73e8")
                 ))
 
-        # 2. Update Detail View if visible and matches app
         if self.detail_container.winfo_ismapped() and hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
             if hasattr(self, "_install_progress") and self._install_progress.winfo_exists():
                 self.after(0, lambda: (
@@ -1580,7 +1575,6 @@ class AppStoreApp(ctk.CTk):
                 ))
 
         if finished or error:
-            # We keep it in list for a few seconds if finished
             def cleanup():
                 if full_name in self._active_installs:
                     del self._active_installs[full_name]
@@ -1596,6 +1590,13 @@ class AppStoreApp(ctk.CTk):
         elif action == "Launch":
             self._launch(app)
 
+    def _cancel_install(self, app):
+        full_name = app.get("full_name", "")
+        if full_name in self._active_installs:
+            self._active_installs[full_name]["cancelled"] = True
+            self._update_install_ui(full_name, "Cancelling...", 0, error=True)
+            self.after(0, lambda: self.show_detail(app))
+
     def _install(self, app, is_update=False):
         full_name = app.get("full_name", "")
         name = app.get("name", "")
@@ -1605,18 +1606,20 @@ class AppStoreApp(ctk.CTk):
         install_path = os.path.join(INSTALL_BASE, name)
 
         if full_name in self._active_installs:
-            return # Already installing
+            return
 
-        action_label = "Updating" if is_update else "Installing"
-        self._active_installs[full_name] = {"status": "Starting...", "progress": 0, "app": app}
+        self._active_installs[full_name] = {"status": "Starting...", "progress": 0, "app": app, "cancelled": False, "finished": False, "error": False}
         
-        # Update current UI if it's the right app
         if hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
-            self._install_progress_frame.pack(fill="x", padx=16, after=self._primary_btn)
-            self._primary_btn.configure(state="disabled", text=action_label + "...")
+            self.show_detail(app)
 
         def run():
             try:
+                def chk():
+                    if self._active_installs.get(full_name, {}).get("cancelled"):
+                        raise Exception("Cancelled")
+
+                chk()
                 self._update_install_ui(full_name, f"Cleaning {name} folder...", 0.1)
                 if os.path.exists(install_path):
                     subprocess.run(["rm", "-rf", install_path], check=True)
@@ -1626,12 +1629,14 @@ class AppStoreApp(ctk.CTk):
                     subprocess.run(["rm", "-rf", tmp_dir])
                 os.makedirs(tmp_dir)
                 
+                chk()
                 self._update_install_ui(full_name, "Cloning repository...", 0.3)
                 subprocess.run(
                     ["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none", repo_url, tmp_dir],
                     check=True, capture_output=True
                 )
                 
+                chk()
                 self._update_install_ui(full_name, "Checking out files...", 0.5)
                 subprocess.run(
                     ["git", "sparse-checkout", "set", subdir],
@@ -1645,6 +1650,7 @@ class AppStoreApp(ctk.CTk):
                 if not os.path.exists(src):
                     raise Exception("Folder not found in repo")
                 
+                chk()
                 self._update_install_ui(full_name, "Moving to apps folder...", 0.7)
                 subprocess.run(["mv", src, install_path], check=True)
                 subprocess.run(["rm", "-rf", tmp_dir])
@@ -1654,6 +1660,7 @@ class AppStoreApp(ctk.CTk):
                     self._update_install_ui(full_name, "Running install.sh...", 0.85)
                     subprocess.run(["bash", "install.sh"], cwd=install_path, check=True, capture_output=True)
                 
+                chk()
                 self.db.add(full_name, name, install_path, pushed_at, app_data=app)
                 self._update_install_ui(full_name, "Success!", 1.0, finished=True)
                 
@@ -1663,7 +1670,7 @@ class AppStoreApp(ctk.CTk):
                 err_msg = str(e)[:30] + "..."
                 self._update_install_ui(full_name, f"Error: {err_msg}", 0, error=True)
                 if hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
-                    self.after(3000, lambda: self._primary_btn.configure(state="normal", text=action_label))
+                    self.after(3000, lambda: self.show_detail(app))
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -1687,7 +1694,6 @@ class AppStoreApp(ctk.CTk):
         try:
             install_path = os.path.join(INSTALL_BASE, name)
             
-            # Run uninstall.sh if it exists
             un_script = os.path.join(install_path, "uninstall.sh")
             if os.path.exists(un_script):
                 subprocess.run(["bash", "uninstall.sh"], cwd=install_path)
@@ -1764,7 +1770,7 @@ class AppStoreApp(ctk.CTk):
         data = self.api.start_device_flow(client_id)
         if not data:
             tk.messagebox.showerror("Error", "Could not connect to GitHub. Is your Client ID valid and 'Device Flow' enabled?")
-            self.config_db.set_client_id(None) # Allow retry
+            self.config_db.set_client_id(None)
             return
 
         user_code = data["user_code"]
