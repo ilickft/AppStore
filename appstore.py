@@ -8,14 +8,14 @@ import re
 import os
 import json
 import subprocess
+import signal
 from PIL import Image, ImageDraw
 from io import BytesIO
 
-SEARCH_QUERY = "termux+desktop+OR+termux+gui+OR+termux+x11+OR+topic:termux-desktop+OR+topic:termux-x11"
 GITHUB_API_BASE = "https://api.github.com"
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
 APPSTORE_REPO_URL = "https://github.com/ilickft/AppStore/"
-APPSTORE_VERSION = "1.1.0"
+APPSTORE_VERSION = "1.2.0"
 INSTALL_BASE = os.path.expanduser("~/.appstore/apps")
 INSTALL_DB_PATH = os.path.expanduser("~/.appstore/installed.json")
 CONFIG_PATH = os.path.expanduser("~/.config/appstore/config.json")
@@ -72,8 +72,8 @@ class InstalledDB:
 
     def add(self, full_name, name, path, pushed_at, app_data=None):
         self._db[full_name] = {
-            "name": name, 
-            "path": path, 
+            "name": name,
+            "path": path,
             "pushed_at": pushed_at,
             "app_data": app_data
         }
@@ -83,15 +83,12 @@ class InstalledDB:
         apps = []
         if not os.path.exists(INSTALL_BASE):
             return apps
-            
         for name in os.listdir(INSTALL_BASE):
             path = os.path.join(INSTALL_BASE, name)
             if not os.path.isdir(path):
                 continue
-                
             db_entry = next((v for v in self._db.values() if v.get("name") == name), None)
             app_data = db_entry.get("app_data") if db_entry else None
-            
             if app_data:
                 app_data = app_data.copy()
             else:
@@ -110,7 +107,6 @@ class InstalledDB:
                     "repo_name": "local",
                     "category": "Installed"
                 }
-            
             app_data["icon_path"] = os.path.join(path, "icon.png")
             app_data["readme_path"] = os.path.join(path, "readme.md")
             app_data["category"] = "Installed"
@@ -255,7 +251,7 @@ class GitHubAPI:
 
     def search_apps(self):
         all_apps = []
-        
+
         repos = ["App-Store-tmx/Games", "App-Store-tmx/Apps"]
         for repo_full_name in repos:
             url = f"{GITHUB_API_BASE}/repos/{repo_full_name}/contents"
@@ -278,18 +274,19 @@ class GitHubAPI:
                                 "icon_url": f"https://raw.githubusercontent.com/{repo_full_name}/main/{item['name']}/icon.png"
                             }
                             all_apps.append(app)
-            except Exception: pass
+            except Exception:
+                pass
 
         tagged_apps = self.search_by_topic("termux-desk-app")
-        for a in tagged_apps: 
+        for a in tagged_apps:
             a["category"] = "Apps"
             all_apps.append(a)
-            
+
         tagged_games = self.search_by_topic("termux-desk-game")
         for a in tagged_games:
             a["category"] = "Games"
             all_apps.append(a)
-            
+
         public_tags = ["termux-desk", "termux-desk-tool"]
         for tag in public_tags:
             tagged_public = self.search_by_topic(tag)
@@ -358,7 +355,8 @@ class GitHubAPI:
             )
             if r.status_code == 200:
                 return r.json()
-        except Exception: pass
+        except Exception:
+            pass
         return None
 
     def poll_for_token(self, client_id, device_code, interval):
@@ -403,19 +401,18 @@ class AppStoreApp(ctk.CTk):
         self.api = GitHubAPI()
         self.config_db = ConfigDB()
         self.db = InstalledDB()
-        
+
         saved_token = self.config_db.get_token()
         if saved_token:
             self.api.set_token(saved_token)
-            
+
         self.loaded_apps = []
         self._apps_fetched = False
-        self._download_queue = []
         self._download_history = []
-        self._active_installs = {}
-        self._queue_worker_running = False
         self._queue_lock = threading.Lock()
-        
+        self._queue_worker_running = False
+        self._active_view = "home"
+
         self._search_after = None
         self._search_visible = False
         self._icon_cache = {}
@@ -440,6 +437,13 @@ class AppStoreApp(ctk.CTk):
         self.bind_all("<Button-5>", self._on_mousewheel)
         self.bind_all("<MouseWheel>", self._on_mousewheel)
 
+    def _get_task(self, full_name):
+        with self._queue_lock:
+            for t in self._download_history:
+                if t["full_name"] == full_name and not t.get("finished") and not t.get("error") and not t.get("cancelled"):
+                    return t
+        return None
+
     def _on_mousewheel(self, event):
         if self.home_view.winfo_viewable():
             sf = self.home_view
@@ -447,10 +451,11 @@ class AppStoreApp(ctk.CTk):
             sf = self.downloads_view
         else:
             sf = self.detail_view
-            
+
         try:
             canvas = getattr(sf, "_parent_canvas", getattr(sf, "_canvas", None))
-            if not canvas: return
+            if not canvas:
+                return
             if event.num == 4:
                 canvas.yview_scroll(-3, "units")
             elif event.num == 5:
@@ -458,7 +463,8 @@ class AppStoreApp(ctk.CTk):
             elif hasattr(event, "delta") and event.delta != 0:
                 amount = int(-1 * (event.delta / 30))
                 canvas.yview_scroll(amount, "units")
-        except: pass
+        except:
+            pass
 
     def _check_updates_silent(self):
         remote_v = self.api.check_appstore_update()
@@ -490,20 +496,20 @@ class AppStoreApp(ctk.CTk):
         ctk.CTkButton(icons_frame, text="⌂", command=self.show_home, **ibtn).pack(side="left", padx=1)
         ctk.CTkButton(icons_frame, text="⬇", command=self.show_downloads, **ibtn).pack(side="left", padx=1)
         ctk.CTkButton(icons_frame, text="↻", command=self._force_refresh_apps, **ibtn).pack(side="left", padx=1)
-        
+
         self._update_btn = ctk.CTkButton(icons_frame, text="⤒", command=self._update_appstore, **ibtn)
         self._update_btn.pack(side="left", padx=1)
-        
+
         self._profile_btn = ctk.CTkButton(icons_frame, text="◉", command=self._login, **ibtn)
         self._profile_btn.pack(side="left", padx=(1, 4))
 
     def _build_tabs(self):
         self._tabs_row = ctk.CTkFrame(self, height=40, corner_radius=0, fg_color="#0f0f1a")
         self._tabs_row.grid(row=1, column=0, sticky="ew")
-        
+
         tab_names = ["All", "Apps", "Games", "Public", "Installed"]
         self._tab_btns = {}
-        
+
         for name in tab_names:
             btn = ctk.CTkButton(
                 self._tabs_row, text=name, width=80, height=30, corner_radius=15,
@@ -524,24 +530,27 @@ class AppStoreApp(ctk.CTk):
                 btn.configure(fg_color="#1a73e8", text_color="#ffffff", font=ctk.CTkFont(size=13, weight="bold"))
             else:
                 btn.configure(fg_color="transparent", text_color="#9aa0a6", font=ctk.CTkFont(size=13))
-        self._apply_filter()
+        if self._active_view != "home":
+            self.show_home()
+        else:
+            self._apply_filter()
 
     def _update_appstore(self):
         conf = ctk.CTkToplevel(self)
         conf.title("Confirm Update")
         conf.geometry("380x200")
         conf.configure(fg_color="#0f0f1a")
-        
-        ctk.CTkLabel(conf, text="Update AppStore to the latest version?", 
+
+        ctk.CTkLabel(conf, text="Update AppStore to the latest version?",
                      font=ctk.CTkFont(size=14)).pack(pady=40)
-        
+
         btns = ctk.CTkFrame(conf, fg_color="transparent")
         btns.pack(fill="x", side="bottom", pady=20)
-        
+
         def start_upd():
             conf.destroy()
             self._do_update_appstore()
-            
+
         ctk.CTkButton(btns, text="Yes, Update", width=110, height=36, command=start_upd).pack(side="right", padx=15)
         ctk.CTkButton(btns, text="Cancel", width=90, height=36, fg_color="#333", command=conf.destroy).pack(side="right", padx=5)
 
@@ -550,17 +559,17 @@ class AppStoreApp(ctk.CTk):
         win.title("Updating AppStore")
         win.geometry("540x450")
         win.configure(fg_color="#0f0f1a")
-        
+
         lbl = ctk.CTkLabel(win, text="Updating to latest version...", font=ctk.CTkFont(size=14, weight="bold"))
         lbl.pack(pady=(15, 5))
-        
-        log = ctk.CTkTextbox(win, fg_color="#0a0a14", border_width=1, border_color="#1e1e40", 
+
+        log = ctk.CTkTextbox(win, fg_color="#0a0a14", border_width=1, border_color="#1e1e40",
                              font=ctk.CTkFont(family="monospace", size=11))
         log.pack(fill="both", expand=True, padx=15, pady=10)
-        
+
         btn_frame = ctk.CTkFrame(win, fg_color="transparent")
         btn_frame.pack(fill="x", padx=15, pady=(0, 15))
-        
+
         close_btn = ctk.CTkButton(btn_frame, text="Close", state="disabled", width=100, command=win.destroy)
         close_btn.pack(side="right")
 
@@ -574,7 +583,7 @@ class AppStoreApp(ctk.CTk):
                 tmp = os.path.expanduser("~/.appstore_tmp_update")
                 if os.path.exists(tmp):
                     subprocess.run(["rm", "-rf", tmp], check=True)
-                
+
                 w("Cloning latest version from GitHub...\n")
                 proc_git = subprocess.Popen(
                     ["git", "clone", "--depth", "1", APPSTORE_REPO_URL, tmp],
@@ -583,11 +592,11 @@ class AppStoreApp(ctk.CTk):
                 for line in proc_git.stdout:
                     w(line)
                 proc_git.wait()
-                
+
                 if proc_git.returncode != 0:
                     w("\nError: git clone failed.\n")
                     return
-                
+
                 script = os.path.join(tmp, "install.sh")
                 if os.path.exists(script):
                     w("\nExecuting install.sh...\n")
@@ -598,9 +607,9 @@ class AppStoreApp(ctk.CTk):
                     for line in proc.stdout:
                         w(line)
                     proc.wait()
-                    
+
                     if proc.returncode == 0:
-                        w("\n" + "="*40 + "\nUPDATE SUCCESSFUL!\n" + "="*40 + "\n")
+                        w("\n" + "=" * 40 + "\nUPDATE SUCCESSFUL!\n" + "=" * 40 + "\n")
                         w("Please restart the AppStore to apply changes.\n")
                     else:
                         w(f"\nUpdate script failed with code {proc.returncode}\n")
@@ -611,7 +620,7 @@ class AppStoreApp(ctk.CTk):
             finally:
                 if win.winfo_exists():
                     self.after(0, lambda: close_btn.configure(state="normal"))
-        
+
         threading.Thread(target=run, daemon=True).start()
 
     def _build_search_row(self):
@@ -635,10 +644,10 @@ class AppStoreApp(ctk.CTk):
         self.home_view.grid(row=0, column=0, sticky="nsew")
 
         self.detail_container = ctk.CTkFrame(self.body, fg_color="#0f0f1a", corner_radius=0)
-        
+
         self.detail_top_bar = ctk.CTkFrame(self.detail_container, height=48, fg_color="#12122a", corner_radius=0)
         self.detail_top_bar.pack(fill="x")
-        
+
         self._back_btn = ctk.CTkButton(
             self.detail_top_bar, text="←  Back",
             width=80, height=30, corner_radius=15,
@@ -654,46 +663,196 @@ class AppStoreApp(ctk.CTk):
         self.downloads_view = ctk.CTkScrollableFrame(self.body, fg_color="#0f0f1a", corner_radius=0)
 
     def show_downloads(self):
+        self._active_view = "downloads"
         self.title("Downloads - AppStore")
         self.home_view.grid_forget()
         self.detail_container.grid_forget()
         self._tabs_row.grid_forget()
         if self._search_visible:
             self._search_row.grid_forget()
-        
+
         self.downloads_view.grid(row=0, column=0, sticky="nsew")
         self._render_downloads_list()
 
     def _render_downloads_list(self):
+        if self._active_view != "downloads":
+            return
+
         for w in self.downloads_view.winfo_children():
             w.destroy()
-            
-        ctk.CTkLabel(self.downloads_view, text="Active Downloads", 
-                     font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 10), padx=20, anchor="w")
-        
-        if not self._active_installs:
-            ctk.CTkLabel(self.downloads_view, text="No active downloads.", 
+
+        header_row = ctk.CTkFrame(self.downloads_view, fg_color="transparent")
+        header_row.pack(fill="x", padx=20, pady=(20, 10))
+
+        ctk.CTkLabel(header_row, text="Download History",
+                     font=ctk.CTkFont(size=18, weight="bold")).pack(side="left")
+
+        with self._queue_lock:
+            history = list(self._download_history)
+
+        completed = [t for t in history if t.get("finished") or t.get("error") or t.get("cancelled")]
+        if completed:
+            def clear_done():
+                with self._queue_lock:
+                    self._download_history[:] = [
+                        t for t in self._download_history
+                        if not (t.get("finished") or t.get("error") or t.get("cancelled"))
+                    ]
+                self._render_downloads_list()
+
+            ctk.CTkButton(header_row, text="Clear", width=70, height=28, corner_radius=14,
+                          fg_color="#2a2a3a", hover_color="#3a3a4a", text_color="#9aa0a6",
+                          font=ctk.CTkFont(size=12), command=clear_done).pack(side="right")
+
+        if not history:
+            ctk.CTkLabel(self.downloads_view, text="No downloads yet.",
                          text_color="#555", font=ctk.CTkFont(size=13)).pack(pady=40)
             return
 
-        for full_name, data in list(self._active_installs.items()):
-            app = data["app"]
+        status_colors = {
+            "Pending": "#9aa0a6",
+            "Cloning": "#1a73e8",
+            "Paused": "#ff9800",
+            "Checking out": "#1a73e8",
+            "Installing": "#ff9800",
+            "Completed": "#34a853",
+            "Failed": "#ff4b4b",
+            "Cancelled": "#666",
+        }
+
+        for task in history:
+            app = task["app"]
+            status = task.get("status", "Pending")
+            progress = task.get("progress", 0.0)
+            is_done = task.get("finished") or task.get("error") or task.get("cancelled")
+            paused = task.get("paused", False)
+
             card = ctk.CTkFrame(self.downloads_view, fg_color="#12122a", corner_radius=10)
-            card.pack(fill="x", padx=20, pady=5)
-            
-            lbl_row = ctk.CTkFrame(card, fg_color="transparent")
-            lbl_row.pack(fill="x", padx=15, pady=(10, 5))
-            
-            ctk.CTkLabel(lbl_row, text=app.get("name"), font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
-            status_lbl = ctk.CTkLabel(lbl_row, text=data["status"], font=ctk.CTkFont(size=12), text_color="#1a73e8")
-            status_lbl.pack(side="right")
-            
-            prog = ctk.CTkProgressBar(card, height=8, corner_radius=4, progress_color="#1a73e8")
-            prog.pack(fill="x", padx=15, pady=(0, 15))
-            prog.set(data["progress"])
-            
-            data["ui_prog"] = prog
-            data["ui_status"] = status_lbl
+            card.pack(fill="x", padx=20, pady=4)
+
+            top = ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=12, pady=(10, 4))
+
+            ctk.CTkLabel(top, text=app.get("name", ""),
+                         font=ctk.CTkFont(size=13, weight="bold")).pack(side="left")
+
+            sc = status_colors.get(status, "#9aa0a6")
+            ctk.CTkLabel(top, text=status, font=ctk.CTkFont(size=11),
+                         text_color=sc).pack(side="right")
+
+            if not is_done:
+                prog = ctk.CTkProgressBar(card, height=6, corner_radius=3, progress_color="#1a73e8")
+                prog.pack(fill="x", padx=12, pady=(0, 6))
+                prog.set(progress)
+
+            btn_row = ctk.CTkFrame(card, fg_color="transparent")
+            btn_row.pack(fill="x", padx=12, pady=(0, 10))
+
+            phase = task.get("phase")
+
+            if status == "Pending":
+                ctk.CTkButton(btn_row, text="Cancel", width=80, height=26, corner_radius=13,
+                              fg_color="#2a0a0a", hover_color="#4a1010", text_color="#ff6b6b",
+                              border_width=1, border_color="#5a1a1a", font=ctk.CTkFont(size=11),
+                              command=lambda t=task: self._cancel_task(t)).pack(side="left", padx=(0, 6))
+
+            elif status in ("Cloning", "Paused"):
+                if not paused:
+                    ctk.CTkButton(btn_row, text="⏸ Pause", width=90, height=26, corner_radius=13,
+                                  fg_color="#1e1e40", hover_color="#2a2a50", text_color="#7eb3ff",
+                                  font=ctk.CTkFont(size=11),
+                                  command=lambda t=task: self._pause_task(t)).pack(side="left", padx=(0, 6))
+                else:
+                    ctk.CTkButton(btn_row, text="▶ Resume", width=90, height=26, corner_radius=13,
+                                  fg_color="#1e1e40", hover_color="#2a2a50", text_color="#34a853",
+                                  font=ctk.CTkFont(size=11),
+                                  command=lambda t=task: self._resume_task(t)).pack(side="left", padx=(0, 6))
+                ctk.CTkButton(btn_row, text="Cancel", width=80, height=26, corner_radius=13,
+                              fg_color="#2a0a0a", hover_color="#4a1010", text_color="#ff6b6b",
+                              border_width=1, border_color="#5a1a1a", font=ctk.CTkFont(size=11),
+                              command=lambda t=task: self._cancel_task(t)).pack(side="left", padx=(0, 6))
+
+            elif status == "Completed":
+                name = app.get("name", "")
+                install_path = os.path.join(INSTALL_BASE, name)
+                launch_script = os.path.join(install_path, "launch.sh")
+                full_name_task = task["full_name"]
+
+                if os.path.exists(launch_script):
+                    ctk.CTkButton(btn_row, text="▶ Launch", width=90, height=26, corner_radius=13,
+                                  fg_color="#1e7e34", hover_color="#155a24",
+                                  font=ctk.CTkFont(size=11),
+                                  command=lambda p=install_path: subprocess.Popen(["bash", "launch.sh"], cwd=p)).pack(side="left", padx=(0, 6))
+
+                ctk.CTkButton(btn_row, text="Uninstall", width=90, height=26, corner_radius=13,
+                              fg_color="#2a0a0a", hover_color="#4a1010", text_color="#ff6b6b",
+                              border_width=1, border_color="#5a1a1a", font=ctk.CTkFont(size=11),
+                              command=lambda a=app, t=task: self._uninstall_from_history(a, t)).pack(side="left", padx=(0, 6))
+
+    def _pause_task(self, task):
+        proc = task.get("proc")
+        if proc and proc.poll() is None:
+            try:
+                os.kill(proc.pid, signal.SIGSTOP)
+                task["paused"] = True
+                task["status"] = "Paused"
+                self._render_downloads_list()
+            except Exception:
+                pass
+
+    def _resume_task(self, task):
+        proc = task.get("proc")
+        if proc and proc.poll() is None:
+            try:
+                os.kill(proc.pid, signal.SIGCONT)
+                task["paused"] = False
+                task["status"] = "Cloning"
+                self._render_downloads_list()
+            except Exception:
+                pass
+
+    def _cancel_task(self, task):
+        task["cancelled"] = True
+        proc = task.get("proc")
+        if proc and proc.poll() is None:
+            try:
+                if task.get("paused"):
+                    os.kill(proc.pid, signal.SIGCONT)
+                proc.terminate()
+            except Exception:
+                pass
+        task["status"] = "Cancelled"
+        task["error"] = True
+        task["finished"] = False
+        self._render_downloads_list()
+
+    def _uninstall_from_history(self, app, task):
+        full_name = app.get("full_name", "")
+        name = app.get("name", "")
+        if not tk.messagebox.askyesno("Uninstall", f"Remove {name}?"):
+            return
+        try:
+            install_path = os.path.join(INSTALL_BASE, name)
+            un_script = os.path.join(install_path, "uninstall.sh")
+            if os.path.exists(un_script):
+                subprocess.run(["bash", "uninstall.sh"], cwd=install_path)
+            subprocess.run(["rm", "-rf", install_path], check=True)
+            self.db.remove(full_name)
+            task["status"] = "Uninstalled"
+            self._render_downloads_list()
+        except Exception as e:
+            tk.messagebox.showerror("Error", str(e))
+
+    def _show_notification(self, message, color="#1e7e34"):
+        try:
+            notif = ctk.CTkFrame(self, fg_color=color, corner_radius=8)
+            notif.place(relx=0.5, y=58, anchor="n")
+            ctk.CTkLabel(notif, text=message, font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color="#ffffff").pack(padx=16, pady=8)
+            self.after(4000, lambda: notif.place_forget() if notif.winfo_exists() else None)
+            self.after(4200, lambda: notif.destroy() if notif.winfo_exists() else None)
+        except Exception:
+            pass
 
     def _toggle_search(self):
         if self._search_visible:
@@ -711,27 +870,32 @@ class AppStoreApp(ctk.CTk):
 
     def _apply_filter(self, _=None):
         q = self._search_entry.get().strip().lower()
-        
+
         if self.current_category == "Installed":
             filtered = self.db.get_all_installed()
+        elif self.current_category == "All":
+            filtered = list(self.loaded_apps)
         else:
             filtered = [a for a in self.loaded_apps if a.get("category") == self.current_category]
-        
+
         if q:
             filtered = [
                 a for a in filtered
                 if q in a.get("name", "").lower()
                 or q in (a.get("description") or "").lower()
             ]
+
+        filtered.sort(key=lambda a: a.get("name", "").lower())
         self._render_home(filtered)
 
     def show_home(self):
+        self._active_view = "home"
         self.title("Home - AppStore")
         self.detail_container.grid_forget()
         self.downloads_view.grid_forget()
         self.home_view.grid(row=0, column=0, sticky="nsew")
         self._tabs_row.grid(row=1, column=0, sticky="ew")
-        
+
         if self._apps_fetched:
             self._apply_filter()
             return
@@ -767,7 +931,7 @@ class AppStoreApp(ctk.CTk):
         if not apps:
             f = ctk.CTkFrame(self.home_view, fg_color="transparent")
             f.pack(expand=True, pady=80)
-            
+
             if self.current_category == "Installed":
                 ctk.CTkLabel(f, text="Your library is empty",
                              text_color="#555", font=ctk.CTkFont(size=17, weight="bold")).pack()
@@ -866,14 +1030,15 @@ class AppStoreApp(ctk.CTk):
         name = app.get("name", "App")
         full_name = app.get("full_name", "")
         self._current_viewing_fn = full_name
-        
+
+        self._active_view = "detail"
         self.title(f"{name} - AppStore")
         self.home_view.grid_forget()
         self.downloads_view.grid_forget()
         self._tabs_row.grid_forget()
         if self._search_visible:
             self._search_row.grid_forget()
-            
+
         self.detail_container.grid(row=0, column=0, sticky="nsew")
         for w in self.detail_view.winfo_children():
             w.destroy()
@@ -891,11 +1056,12 @@ class AppStoreApp(ctk.CTk):
         lang = app.get("language") or "N/A"
         pushed_at = app.get("pushed_at", "")
         owner = app.get("owner", {})
-        avatar_url = owner.get("avatar_url")
         html_url = app.get("html_url", "")
         is_verified = self.api.is_verified(full_name)
         is_inst = self.db.is_installed(full_name)
         needs_upd = self.db.needs_update(full_name, pushed_at) if is_inst else False
+        active_task = self._get_task(full_name)
+        is_active = active_task is not None
 
         if not is_verified:
             warn_frame = ctk.CTkFrame(self.detail_view, fg_color="#3c1a00", corner_radius=8)
@@ -954,31 +1120,15 @@ class AppStoreApp(ctk.CTk):
         btn_row = ctk.CTkFrame(self.detail_view, fg_color="transparent")
         btn_row.pack(fill="x", padx=16, pady=(0, 6))
 
-        is_active = False
-        if full_name in self._active_installs:
-            data = self._active_installs[full_name]
-            if not data.get("finished") and not data.get("error"):
-                is_active = True
-
-        if not is_inst:
-            primary_text, primary_fg, primary_hv = "Install", "#1a73e8", "#1256b4"
-        elif needs_upd:
-            primary_text, primary_fg, primary_hv = "Update", "#e65c00", "#b34700"
-        else:
-            primary_text, primary_fg, primary_hv = "Launch", "#1e7e34", "#155a24"
-
-        self._primary_btn = ctk.CTkButton(
-            btn_row, text=primary_text,
-            width=150, height=42, corner_radius=21,
-            fg_color=primary_fg, hover_color=primary_hv,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            command=lambda: self._primary_action(app, primary_text)
-        )
-        self._primary_btn.pack(side="left", padx=(0, 10))
-
         if is_active:
-            action_lbl = "Updating..." if is_inst else "Installing..."
-            self._primary_btn.configure(state="disabled", text=action_lbl)
+            task_status = active_task.get("status", "Working")
+            self._primary_btn = ctk.CTkButton(
+                btn_row, text=f"{task_status}...",
+                width=150, height=42, corner_radius=21,
+                fg_color="#333", hover_color="#444", state="disabled",
+                font=ctk.CTkFont(size=14, weight="bold")
+            )
+            self._primary_btn.pack(side="left", padx=(0, 10))
 
             ctk.CTkButton(
                 btn_row, text="Cancel",
@@ -986,9 +1136,25 @@ class AppStoreApp(ctk.CTk):
                 fg_color="#2a0a0a", hover_color="#4a1010",
                 text_color="#ff6b6b", border_width=1, border_color="#5a1a1a",
                 font=ctk.CTkFont(size=13),
-                command=lambda: self._cancel_install(app)
+                command=lambda: self._cancel_task(active_task)
             ).pack(side="left", padx=(0, 10))
         else:
+            if not is_inst:
+                primary_text, primary_fg, primary_hv = "Install", "#1a73e8", "#1256b4"
+            elif needs_upd:
+                primary_text, primary_fg, primary_hv = "Update", "#e65c00", "#b34700"
+            else:
+                primary_text, primary_fg, primary_hv = "Launch", "#1e7e34", "#155a24"
+
+            self._primary_btn = ctk.CTkButton(
+                btn_row, text=primary_text,
+                width=150, height=42, corner_radius=21,
+                fg_color=primary_fg, hover_color=primary_hv,
+                font=ctk.CTkFont(size=14, weight="bold"),
+                command=lambda: self._primary_action(app, primary_text)
+            )
+            self._primary_btn.pack(side="left", padx=(0, 10))
+
             if is_inst:
                 ctk.CTkButton(
                     btn_row, text="Uninstall",
@@ -1025,26 +1191,22 @@ class AppStoreApp(ctk.CTk):
                 font=ctk.CTkFont(size=13), text_color="#9aa0a6", anchor="w"
             ).pack(fill="x", padx=16, pady=(10, 0))
 
-        self._install_progress_frame = ctk.CTkFrame(self.detail_view, fg_color="transparent")
-        
-        self._install_status_lbl = ctk.CTkLabel(
-            self._install_progress_frame, text="Installing...",
-            font=ctk.CTkFont(size=12, slant="italic"), text_color="#1a73e8"
-        )
-        self._install_status_lbl.pack(anchor="w", padx=2)
-        
-        self._install_progress = ctk.CTkProgressBar(
-            self._install_progress_frame, height=8, corner_radius=4,
-            progress_color="#1a73e8", fg_color="#1e1e40"
-        )
-        self._install_progress.pack(fill="x", pady=(2, 10))
-        self._install_progress.set(0)
-
         if is_active:
-            data = self._active_installs[full_name]
-            self._install_progress_frame.pack(fill="x", padx=16, after=self._primary_btn)
-            self._install_status_lbl.configure(text=data["status"])
-            self._install_progress.set(data["progress"])
+            self._install_progress_frame = ctk.CTkFrame(self.detail_view, fg_color="transparent")
+            self._install_progress_frame.pack(fill="x", padx=16, pady=(8, 0))
+
+            self._install_status_lbl = ctk.CTkLabel(
+                self._install_progress_frame, text=active_task.get("status", ""),
+                font=ctk.CTkFont(size=12, slant="italic"), text_color="#1a73e8"
+            )
+            self._install_status_lbl.pack(anchor="w", padx=2)
+
+            self._install_progress = ctk.CTkProgressBar(
+                self._install_progress_frame, height=8, corner_radius=4,
+                progress_color="#1a73e8", fg_color="#1e1e40"
+            )
+            self._install_progress.pack(fill="x", pady=(2, 10))
+            self._install_progress.set(active_task.get("progress", 0))
 
         self._ss_sep_top = ctk.CTkFrame(self.detail_view, height=1, fg_color="#1e1e40")
         self._ss_sep_top.pack(fill="x", padx=16, pady=14)
@@ -1056,7 +1218,7 @@ class AppStoreApp(ctk.CTk):
             text_color="#3a3a5a", font=ctk.CTkFont(size=11)
         )
         self._ss_loading_lbl.pack(anchor="w", pady=2)
-        
+
         self._ss_sep_bottom = ctk.CTkFrame(self.detail_view, height=1, fg_color="#1e1e40")
         self._ss_sep_bottom.pack(fill="x", padx=16, pady=(16, 0))
 
@@ -1079,19 +1241,19 @@ class AppStoreApp(ctk.CTk):
 
         self._reviews_outer = ctk.CTkFrame(self.detail_view, fg_color="transparent")
         self._reviews_outer.pack(fill="x", padx=16, pady=(16, 20))
-        
-        ctk.CTkLabel(self._reviews_outer, text="Reviews", 
+
+        ctk.CTkLabel(self._reviews_outer, text="Reviews",
                      font=ctk.CTkFont(size=16, weight="bold"), text_color="#e8eaed").pack(anchor="w", pady=(0, 10))
-        
+
         self._reviews_list = ctk.CTkFrame(self._reviews_outer, fg_color="transparent")
         self._reviews_list.pack(fill="x")
-        
-        self._reviews_loading = ctk.CTkLabel(self._reviews_list, text="Loading reviews...", 
+
+        self._reviews_loading = ctk.CTkLabel(self._reviews_list, text="Loading reviews...",
                                               text_color="#3a3a5a", font=ctk.CTkFont(size=11))
         self._reviews_loading.pack(pady=10)
-        
+
         self._write_review_btn = ctk.CTkButton(
-            self._reviews_outer, text="✎ Write a Review", 
+            self._reviews_outer, text="✎ Write a Review",
             width=140, height=34, corner_radius=17,
             fg_color="#1e1e40", hover_color="#2a2a50", text_color="#7eb3ff",
             font=ctk.CTkFont(size=12),
@@ -1100,7 +1262,6 @@ class AppStoreApp(ctk.CTk):
         self._write_review_btn.pack(anchor="w", pady=(10, 0))
 
         threading.Thread(target=self._load_reviews, args=(app,), daemon=True).start()
-
         ctk.CTkFrame(self.detail_view, height=30, fg_color="transparent").pack()
 
     def _load_detail_icon(self, url):
@@ -1140,23 +1301,23 @@ class AppStoreApp(ctk.CTk):
         full_name = app.get("full_name", "")
         name = app.get("name", "")
         subdir = app.get("subdir", "")
-        
+
         all_urls = []
-        
         all_urls.extend(self.api.get_readme_images(full_name))
-        
+
         install_path = os.path.join(INSTALL_BASE, name)
         if os.path.exists(install_path):
             try:
                 for f in os.listdir(install_path):
                     if f.lower().startswith("screenshot") and f.lower().endswith((".png", ".jpg", ".jpeg")):
                         all_urls.append(os.path.join(install_path, f))
-            except: pass
-            
+            except:
+                pass
+
         if ":" in full_name:
             repo, _ = full_name.split(":", 1)
             try:
-                r = requests.get(f"{GITHUB_API_BASE}/repos/{repo}/contents/{subdir}", 
+                r = requests.get(f"{GITHUB_API_BASE}/repos/{repo}/contents/{subdir}",
                                  headers=self.api.headers, timeout=5)
                 if r.status_code == 200:
                     for item in r.json():
@@ -1165,7 +1326,8 @@ class AppStoreApp(ctk.CTk):
                             dl_url = item.get("download_url")
                             if dl_url not in all_urls:
                                 all_urls.append(dl_url)
-            except: pass
+            except:
+                pass
 
         seen = set()
         unique_urls = []
@@ -1173,26 +1335,26 @@ class AppStoreApp(ctk.CTk):
             if u not in seen:
                 unique_urls.append(u)
                 seen.add(u)
-        
+
         self.after(0, lambda: self._render_screenshots(unique_urls))
 
     def _render_screenshots(self, urls):
         if self._ss_loading_lbl.winfo_exists():
             self._ss_loading_lbl.destroy()
-            
+
         if not urls:
             self._hide_ss_section()
             return
-            
+
         self._ss_scroll = ctk.CTkScrollableFrame(
             self._screenshots_outer, height=210,
             orientation="horizontal", fg_color="transparent"
         )
         self._ss_scroll.pack(fill="x", pady=4)
-        
+
         self._loaded_ss_count = 0
         self._total_ss_attempted = len(urls[:8])
-        
+
         for url in urls[:8]:
             threading.Thread(
                 target=self._load_one_screenshot, args=(self._ss_scroll, url), daemon=True
@@ -1213,7 +1375,7 @@ class AppStoreApp(ctk.CTk):
                 img = Image.open(BytesIO(r.content))
             else:
                 img = Image.open(url)
-            
+
             if img.width < 100 or img.height < 100:
                 raise Exception("Too small")
 
@@ -1228,8 +1390,6 @@ class AppStoreApp(ctk.CTk):
     def _on_ss_fail(self):
         self._loaded_ss_count = getattr(self, "_loaded_ss_count", 0)
         self._total_ss_attempted = getattr(self, "_total_ss_attempted", 0)
-        if hasattr(self, "_ss_scroll") and not self._ss_scroll.winfo_children():
-            pass
 
     def _place_screenshot(self, ctk_img, parent):
         if not parent.winfo_exists():
@@ -1244,7 +1404,7 @@ class AppStoreApp(ctk.CTk):
         full_name = app.get("full_name", "")
         name = app.get("name", "")
         repo = full_name.split(":")[0] if ":" in full_name else full_name
-        
+
         url = f"{GITHUB_API_BASE}/repos/{repo}/issues?state=open&per_page=100"
         reviews = []
         try:
@@ -1256,11 +1416,11 @@ class AppStoreApp(ctk.CTk):
                         rating_match = re.search(r"Ratings:\s*([1-5])", body, re.IGNORECASE)
                         comment_match = re.search(r"Comment:\s*(.*)", body, re.IGNORECASE | re.DOTALL)
                         user_match = re.search(r"User:\s*(.*)", body, re.IGNORECASE)
-                        
+
                         rating = rating_match.group(1) if rating_match else "0"
                         comment = comment_match.group(1).strip() if comment_match else body.strip()
                         display_name = user_match.group(1).strip() if user_match else issue.get("user", {}).get("login", "Unknown")
-                        
+
                         reviews.append({
                             "id": issue.get("number"),
                             "login": issue.get("user", {}).get("login"),
@@ -1278,69 +1438,69 @@ class AppStoreApp(ctk.CTk):
             return
         if self._reviews_loading.winfo_exists():
             self._reviews_loading.destroy()
-            
+
         for w in self._reviews_list.winfo_children():
             w.destroy()
-            
+
         if not reviews:
-            ctk.CTkLabel(self._reviews_list, text="No reviews yet. Be the first to review!", 
+            ctk.CTkLabel(self._reviews_list, text="No reviews yet. Be the first to review!",
                          text_color="#555", font=ctk.CTkFont(size=12, slant="italic")).pack(pady=10)
             return
-            
+
         my_login = self.config_db.get_username()
         for i, rev in enumerate(reviews):
             card = ctk.CTkFrame(self._reviews_list, fg_color="#12122a", corner_radius=8)
             card.pack(fill="x", pady=5)
-            
+
             header = ctk.CTkFrame(card, fg_color="transparent")
             header.pack(fill="x", padx=10, pady=(10, 5))
-            
+
             left = ctk.CTkFrame(header, fg_color="transparent")
             left.pack(side="left")
-            
+
             ava_size = 28
             ph = _placeholder_icon(rev["user"], ava_size)
             ctk_ph = ctk.CTkImage(light_image=ph, dark_image=ph, size=(ava_size, ava_size))
             ava_lbl = ctk.CTkLabel(left, image=ctk_ph, text="")
             ava_lbl.pack(side="left", padx=(0, 8))
-            
+
             ref_id = f"rev_ava_{i}"
             self._ctk_img_refs[ref_id] = ctk_ph
-            
+
             ctk.CTkLabel(left, text=rev["user"], font=ctk.CTkFont(size=13, weight="bold"), text_color="#e8eaed").pack(side="left")
-            
+
             right = ctk.CTkFrame(header, fg_color="transparent")
             right.pack(side="right")
-            
+
             stars_text = "★" * rev["rating"] + "☆" * (5 - rev["rating"])
             ctk.CTkLabel(right, text=stars_text, font=ctk.CTkFont(size=14), text_color="#ffb400").pack(side="right", padx=(10, 0))
-            
+
             tools = ctk.CTkFrame(right, fg_color="transparent")
             tools.pack(side="right")
-            
-            tbtn = dict(width=24, height=24, corner_radius=12, fg_color="transparent", 
+
+            tbtn = dict(width=24, height=24, corner_radius=12, fg_color="transparent",
                         hover_color="#1a1a30", font=ctk.CTkFont(size=14))
-            
+
             ctk.CTkButton(tools, text="↩", command=lambda r=rev: self._show_reply_dialog(app, r), **tbtn).pack(side="left", padx=2)
-            
+
             if rev["login"] == my_login:
                 ctk.CTkButton(tools, text="✎", command=lambda r=rev: self._show_write_review_dialog(app, edit_rev=r), **tbtn).pack(side="left", padx=2)
                 ctk.CTkButton(tools, text="🗑", text_color="#ff4b4b", command=lambda r=rev: self._delete_review(app, r), **tbtn).pack(side="left", padx=2)
 
-            ctk.CTkLabel(card, text=rev["comment"], font=ctk.CTkFont(size=12), text_color="#9aa0a6", 
+            ctk.CTkLabel(card, text=rev["comment"], font=ctk.CTkFont(size=12), text_color="#9aa0a6",
                          justify="left", wraplength=480, anchor="w").pack(fill="x", padx=10, pady=(0, 10))
-            
+
             if rev.get("avatar"):
                 threading.Thread(target=self._load_review_avatar, args=(ava_lbl, rev["avatar"], ref_id), daemon=True).start()
 
     def _delete_review(self, app, rev):
         if not tk.messagebox.askyesno("Delete Review", "Delete your review?"):
             return
-        
+
         full_name = app.get("full_name", "")
         repo = full_name.split(":")[0] if ":" in full_name else full_name
         url = f"{GITHUB_API_BASE}/repos/{repo}/issues/{rev['id']}"
-        
+
         def run():
             try:
                 r = requests.patch(url, headers=self.api.headers, json={"state": "closed"}, timeout=10)
@@ -1360,28 +1520,29 @@ class AppStoreApp(ctk.CTk):
             tk.messagebox.showwarning("Login Required", "You must be logged in to reply.")
             self._login()
             return
-            
+
         win = ctk.CTkToplevel(self)
         win.title(f"Reply to {rev['user']}")
         win.geometry("400x300")
         win.configure(fg_color="#0f0f1a")
         win.transient(self)
-        
+
         ctk.CTkLabel(win, text=f"Reply to {rev['user']}", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(20, 10))
-        
+
         comment_box = ctk.CTkTextbox(win, height=120, fg_color="#1a1a30", border_color="#2a2a50", border_width=1)
         comment_box.pack(fill="x", padx=20, pady=10)
-        
+
         def submit():
             comment = comment_box.get("1.0", "end").strip()
             if not comment:
                 return
-                
+
             full_name = app.get("full_name", "")
             repo = full_name.split(":")[0] if ":" in full_name else full_name
             url = f"{GITHUB_API_BASE}/repos/{repo}/issues/{rev['id']}/comments"
-            
+
             sub_btn.configure(state="disabled", text="Replying...")
+
             def run():
                 try:
                     r = requests.post(url, headers=self.api.headers, json={"body": comment}, timeout=10)
@@ -1398,7 +1559,7 @@ class AppStoreApp(ctk.CTk):
                 except:
                     pass
             threading.Thread(target=run, daemon=True).start()
-            
+
         sub_btn = ctk.CTkButton(win, text="Post Reply", command=submit)
         sub_btn.pack(pady=20)
 
@@ -1417,47 +1578,49 @@ class AppStoreApp(ctk.CTk):
             tk.messagebox.showwarning("Login Required", "You must be logged in to post a review.")
             self._login()
             return
-            
+
         win = ctk.CTkToplevel(self)
         title_text = "Edit Review" if edit_rev else "Write a Review"
         win.title(title_text)
         win.geometry("400x380")
         win.configure(fg_color="#0f0f1a")
         win.transient(self)
-        
+
         ctk.CTkLabel(win, text=f"{title_text} for {app.get('name')}", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 10))
-        
+
         rating_frame = ctk.CTkFrame(win, fg_color="transparent")
         rating_frame.pack(pady=10)
-        
+
         self._selected_rating = edit_rev["rating"] if edit_rev else 5
         stars_btns = []
+
         def set_rating(r):
             self._selected_rating = r
             for i, btn in enumerate(stars_btns):
                 btn.configure(text="★" if i < r else "☆", text_color="#ffb400" if i < r else "#555")
-                
+
         for i in range(1, 6):
-            b = ctk.CTkButton(rating_frame, text="★", width=30, height=30, fg_color="transparent", 
+            b = ctk.CTkButton(rating_frame, text="★", width=30, height=30, fg_color="transparent",
                               hover_color="#1a1a30", font=ctk.CTkFont(size=24), text_color="#ffb400",
                               command=lambda idx=i: set_rating(idx))
             b.pack(side="left", padx=2)
             stars_btns.append(b)
-        
+
         set_rating(self._selected_rating)
-            
+
         comment_box = ctk.CTkTextbox(win, height=120, fg_color="#1a1a30", border_color="#2a2a50", border_width=1)
         comment_box.pack(fill="x", padx=20, pady=10)
         if edit_rev:
             comment_box.insert("1.0", edit_rev["comment"])
-        
+
         def submit():
             comment = comment_box.get("1.0", "end").strip()
             if not comment:
                 tk.messagebox.showwarning("Error", "Please write a comment.")
                 return
-                
+
             sub_btn.configure(state="disabled", text="Saving..." if edit_rev else "Submitting...")
+
             def run():
                 success = self._post_review(app, self._selected_rating, comment, edit_id=edit_rev["id"] if edit_rev else None)
                 if success:
@@ -1472,7 +1635,7 @@ class AppStoreApp(ctk.CTk):
                         sub_btn.configure(state="normal", text="Submit Review")
                     ))
             threading.Thread(target=run, daemon=True).start()
-            
+
         sub_btn = ctk.CTkButton(win, text="Save Review" if edit_rev else "Submit Review", command=submit)
         sub_btn.pack(pady=20)
 
@@ -1480,9 +1643,8 @@ class AppStoreApp(ctk.CTk):
         full_name = app.get("full_name", "")
         name = app.get("name", "")
         repo = full_name.split(":")[0] if ":" in full_name else full_name
-        username = self.config_db.get_username() or "User"
         display_name = self.config_db.get_display_name()
-        
+
         body = f"User: {display_name}\nRatings: {rating}\nComment: {comment}"
         payload = {"title": name, "body": body}
         try:
@@ -1527,7 +1689,7 @@ class AppStoreApp(ctk.CTk):
                     text = f.read()
             except:
                 pass
-        
+
         if not text:
             text = self.api.get_readme(full_name) or "No README found for this repository."
         self.after(0, lambda: self._show_readme(text, loading_lbl))
@@ -1535,29 +1697,84 @@ class AppStoreApp(ctk.CTk):
     def _show_readme(self, text, loading_lbl):
         if loading_lbl.winfo_exists():
             loading_lbl.destroy()
+
         tb = ctk.CTkTextbox(
             self._readme_frame,
             height=340,
             font=ctk.CTkFont(size=11, family="monospace"),
             fg_color="#0b0b1a",
-            text_color="#8a9aaa",
             wrap="word",
             border_width=0
         )
         tb.pack(fill="both", padx=10, pady=10)
-        tb.insert("1.0", text)
+
+        inner = tb._textbox
+        inner.tag_configure("h1", font=("monospace", 17, "bold"), foreground="#e8eaed")
+        inner.tag_configure("h2", font=("monospace", 14, "bold"), foreground="#c8cacd")
+        inner.tag_configure("h3", font=("monospace", 12, "bold"), foreground="#a8aaad")
+        inner.tag_configure("bold", font=("monospace", 11, "bold"), foreground="#d0d0e0")
+        inner.tag_configure("italic", font=("monospace", 11, "italic"), foreground="#aabbcc")
+        inner.tag_configure("code_inline", font=("Courier", 10), foreground="#7eb3ff", background="#0a0a14")
+        inner.tag_configure("code_block", font=("Courier", 10), foreground="#7eb3ff", background="#080810")
+        inner.tag_configure("bullet", foreground="#9aa0a6")
+        inner.tag_configure("blockquote", font=("monospace", 11, "italic"), foreground="#7a8a9a")
+        inner.tag_configure("normal", foreground="#8a9aaa")
+
+        in_code_block = False
+        for line in text.split("\n"):
+            stripped = line.rstrip()
+
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+                inner.insert("end", "\n")
+                continue
+
+            if in_code_block:
+                inner.insert("end", stripped + "\n", "code_block")
+                continue
+
+            if stripped.startswith("### "):
+                inner.insert("end", stripped[4:] + "\n", "h3")
+            elif stripped.startswith("## "):
+                inner.insert("end", stripped[3:] + "\n", "h2")
+            elif stripped.startswith("# "):
+                inner.insert("end", stripped[2:] + "\n", "h1")
+            elif stripped.startswith("- ") or stripped.startswith("* "):
+                inner.insert("end", "  • " + stripped[2:] + "\n", "bullet")
+            elif stripped.startswith("> "):
+                inner.insert("end", "  " + stripped[2:] + "\n", "blockquote")
+            elif stripped == "---" or stripped == "***":
+                inner.insert("end", "─" * 40 + "\n", "normal")
+            else:
+                pattern = re.compile(r'(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)')
+                last = 0
+                for m in pattern.finditer(stripped):
+                    if m.start() > last:
+                        inner.insert("end", stripped[last:m.start()], "normal")
+                    val = m.group(0)
+                    if val.startswith("**"):
+                        inner.insert("end", val[2:-2], "bold")
+                    elif val.startswith("*"):
+                        inner.insert("end", val[1:-1], "italic")
+                    elif val.startswith("`"):
+                        inner.insert("end", val[1:-1], "code_inline")
+                    last = m.end()
+                if last < len(stripped):
+                    inner.insert("end", stripped[last:], "normal")
+                inner.insert("end", "\n")
+
         tb.configure(state="disabled")
 
     def _check_app_update(self, app):
         full_name = app.get("full_name", "")
         if ":" not in full_name:
             return
-            
+
         repo, subdir = full_name.split(":", 1)
         url = f"{GITHUB_API_BASE}/repos/{repo}/commits?path={subdir}&per_page=1"
-        
+
         self._check_upd_btn.configure(state="disabled", text="Checking...")
-        
+
         def run():
             try:
                 r = requests.get(url, headers=self.api.headers, timeout=10)
@@ -1582,42 +1799,10 @@ class AppStoreApp(ctk.CTk):
                 else:
                     self.after(0, lambda: self._check_upd_btn.configure(state="normal", text="Check for updates"))
             except:
-                self.after(0, lambda: self._check_upd_btn.configure(state="normal", text="Check for updates") 
+                self.after(0, lambda: self._check_upd_btn.configure(state="normal", text="Check for updates")
                            if self._check_upd_btn.winfo_exists() else None)
-        
+
         threading.Thread(target=run, daemon=True).start()
-
-    def _update_install_ui(self, full_name, status, progress, finished=False, error=False):
-        if full_name not in self._active_installs:
-            return
-        
-        data = self._active_installs[full_name]
-        data["status"] = status
-        data["progress"] = progress
-        data["finished"] = finished
-        data["error"] = error
-        
-        if self.downloads_view.winfo_ismapped():
-            if "ui_prog" in data and data["ui_prog"].winfo_exists():
-                self.after(0, lambda: (
-                    data["ui_prog"].set(progress),
-                    data["ui_status"].configure(text=status, text_color="#ff4b4b" if error else "#1a73e8")
-                ))
-
-        if self.detail_container.winfo_ismapped() and hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
-            if hasattr(self, "_install_progress") and self._install_progress.winfo_exists():
-                self.after(0, lambda: (
-                    self._install_progress.set(progress),
-                    self._install_status_lbl.configure(text=status, text_color="#ff4b4b" if error else "#1a73e8")
-                ))
-
-        if finished or error:
-            def cleanup():
-                if full_name in self._active_installs:
-                    del self._active_installs[full_name]
-                    if self.downloads_view.winfo_ismapped():
-                        self._render_downloads_list()
-            self.after(5000, cleanup)
 
     def _primary_action(self, app, action):
         if action == "Install":
@@ -1627,89 +1812,164 @@ class AppStoreApp(ctk.CTk):
         elif action == "Launch":
             self._launch(app)
 
-    def _cancel_install(self, app):
+    def _enqueue_install(self, app, is_update=False):
         full_name = app.get("full_name", "")
-        if full_name in self._active_installs:
-            self._active_installs[full_name]["cancelled"] = True
-            self._update_install_ui(full_name, "Cancelling...", 0, error=True)
-            self.after(0, lambda: self.show_detail(app))
 
-    def _install(self, app, is_update=False):
-        full_name = app.get("full_name", "")
+        with self._queue_lock:
+            for t in self._download_history:
+                if t["full_name"] == full_name and not t.get("finished") and not t.get("error") and not t.get("cancelled"):
+                    return
+
+        task = {
+            "full_name": full_name,
+            "app": app,
+            "is_update": is_update,
+            "status": "Pending",
+            "progress": 0.0,
+            "proc": None,
+            "phase": None,
+            "paused": False,
+            "cancelled": False,
+            "finished": False,
+            "error": False,
+            "error_msg": "",
+        }
+
+        with self._queue_lock:
+            self._download_history.append(task)
+            start_worker = not self._queue_worker_running
+            if start_worker:
+                self._queue_worker_running = True
+
+        if start_worker:
+            threading.Thread(target=self._queue_worker, daemon=True).start()
+
+    def _queue_worker(self):
+        while True:
+            task = None
+            with self._queue_lock:
+                for t in self._download_history:
+                    if t["status"] == "Pending" and not t.get("cancelled"):
+                        task = t
+                        break
+
+            if task is None:
+                with self._queue_lock:
+                    self._queue_worker_running = False
+                break
+
+            self._run_task(task)
+
+    def _run_task(self, task):
+        app = task["app"]
+        full_name = task["full_name"]
         name = app.get("name", "")
         repo_url = app.get("html_url", "")
         subdir = app.get("subdir", "")
         pushed_at = app.get("pushed_at", "")
         install_path = os.path.join(INSTALL_BASE, name)
 
-        if full_name in self._active_installs:
-            return
+        def upd(status, progress, finished=False, error=False):
+            task["status"] = status
+            task["progress"] = progress
+            task["finished"] = finished
+            task["error"] = error
+            if self._active_view == "downloads":
+                self.after(0, self._render_downloads_list)
+            if (self._active_view == "detail"
+                    and getattr(self, "_current_viewing_fn", None) == full_name
+                    and hasattr(self, "_install_progress")
+                    and self._install_progress.winfo_exists()):
+                self.after(0, lambda s=status, p=progress: (
+                    self._install_progress.set(p),
+                    self._install_status_lbl.configure(text=s,
+                        text_color="#ff4b4b" if error else "#1a73e8")
+                ))
 
-        self._active_installs[full_name] = {"status": "Starting...", "progress": 0, "app": app, "cancelled": False, "finished": False, "error": False}
-        
-        if hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
-            self.show_detail(app)
+        try:
+            if task.get("cancelled"):
+                return
 
-        def run():
-            try:
-                def chk():
-                    if self._active_installs.get(full_name, {}).get("cancelled"):
-                        raise Exception("Cancelled")
+            upd("Cloning", 0.1)
+            task["phase"] = "clone"
 
-                chk()
-                self._update_install_ui(full_name, f"Cleaning {name} folder...", 0.1)
-                if os.path.exists(install_path):
-                    subprocess.run(["rm", "-rf", install_path], check=True)
-                
-                tmp_dir = os.path.expanduser(f"~/.appstore_tmp_{name}")
-                if os.path.exists(tmp_dir):
-                    subprocess.run(["rm", "-rf", tmp_dir])
-                os.makedirs(tmp_dir)
-                
-                chk()
-                self._update_install_ui(full_name, "Cloning repository...", 0.3)
-                subprocess.run(
-                    ["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none", repo_url, tmp_dir],
-                    check=True, capture_output=True
-                )
-                
-                chk()
-                self._update_install_ui(full_name, "Checking out files...", 0.5)
-                subprocess.run(
-                    ["git", "sparse-checkout", "set", subdir],
-                    cwd=tmp_dir, check=True, capture_output=True
-                )
-                subprocess.run(
-                    ["git", "checkout"], cwd=tmp_dir, check=True, capture_output=True
-                )
-                
-                src = os.path.join(tmp_dir, subdir)
-                if not os.path.exists(src):
-                    raise Exception("Folder not found in repo")
-                
-                chk()
-                self._update_install_ui(full_name, "Moving to apps folder...", 0.7)
-                subprocess.run(["mv", src, install_path], check=True)
+            if os.path.exists(install_path):
+                subprocess.run(["rm", "-rf", install_path], check=True)
+
+            tmp_dir = os.path.expanduser(f"~/.appstore_tmp_{name}")
+            if os.path.exists(tmp_dir):
                 subprocess.run(["rm", "-rf", tmp_dir])
-                    
-                script = os.path.join(install_path, "install.sh")
-                if os.path.exists(script):
-                    self._update_install_ui(full_name, "Running install.sh...", 0.85)
-                    subprocess.run(["bash", "install.sh"], cwd=install_path, check=True, capture_output=True)
-                
-                chk()
-                self.db.add(full_name, name, install_path, pushed_at, app_data=app)
-                self._update_install_ui(full_name, "Success!", 1.0, finished=True)
-                
-                if hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
-                    self.after(1000, lambda: self.show_detail(app))
-            except Exception as e:
-                err_msg = str(e)[:30] + "..."
-                self._update_install_ui(full_name, f"Error: {err_msg}", 0, error=True)
-                if hasattr(self, "_current_viewing_fn") and self._current_viewing_fn == full_name:
-                    self.after(3000, lambda: self.show_detail(app))
+            os.makedirs(tmp_dir)
 
-        threading.Thread(target=run, daemon=True).start()
+            if task.get("cancelled"):
+                subprocess.run(["rm", "-rf", tmp_dir])
+                return
+
+            clone_proc = subprocess.Popen(
+                ["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none", repo_url, tmp_dir],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            task["proc"] = clone_proc
+            clone_proc.wait()
+            task["proc"] = None
+
+            if task.get("cancelled"):
+                subprocess.run(["rm", "-rf", tmp_dir])
+                return
+
+            if clone_proc.returncode != 0:
+                subprocess.run(["rm", "-rf", tmp_dir])
+                raise Exception("git clone failed")
+
+            upd("Checking out", 0.45)
+            subprocess.run(
+                ["git", "sparse-checkout", "set", subdir],
+                cwd=tmp_dir, check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "checkout"], cwd=tmp_dir, check=True, capture_output=True
+            )
+
+            src = os.path.join(tmp_dir, subdir)
+            if not os.path.exists(src):
+                raise Exception("Folder not found in repo")
+
+            upd("Installing", 0.7)
+            task["phase"] = "install"
+
+            subprocess.run(["mv", src, install_path], check=True)
+            subprocess.run(["rm", "-rf", tmp_dir])
+
+            script = os.path.join(install_path, "install.sh")
+            if os.path.exists(script):
+                install_proc = subprocess.Popen(
+                    ["bash", "install.sh"], cwd=install_path,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                task["proc"] = install_proc
+                install_proc.wait()
+                task["proc"] = None
+
+            if task.get("cancelled"):
+                return
+
+            self.db.add(full_name, name, install_path, pushed_at, app_data=app)
+            upd("Completed", 1.0, finished=True)
+
+            self.after(0, lambda: self._show_notification(f"✓  {name} installed successfully"))
+
+            if (self._active_view == "detail"
+                    and getattr(self, "_current_viewing_fn", None) == full_name):
+                self.after(800, lambda: self.show_detail(app))
+
+        except Exception as e:
+            err_msg = str(e)[:50]
+            task["error_msg"] = err_msg
+            upd("Failed", 0.0, error=True)
+            self.after(0, lambda: self._show_notification(f"✗  {name} failed", color="#c62828"))
+
+    def _install(self, app, is_update=False):
+        self._enqueue_install(app, is_update)
 
     def _launch(self, app):
         name = app.get("name", "")
@@ -1730,11 +1990,9 @@ class AppStoreApp(ctk.CTk):
             return
         try:
             install_path = os.path.join(INSTALL_BASE, name)
-            
             un_script = os.path.join(install_path, "uninstall.sh")
             if os.path.exists(un_script):
                 subprocess.run(["bash", "uninstall.sh"], cwd=install_path)
-                
             subprocess.run(["rm", "-rf", install_path], check=True)
             self.db.remove(full_name)
             self.show_detail(app)
@@ -1758,14 +2016,14 @@ class AppStoreApp(ctk.CTk):
         win.configure(fg_color="#0f0f1a")
         win.transient(self)
 
-        ctk.CTkLabel(win, text="Enter your GitHub OAuth Client ID", 
+        ctk.CTkLabel(win, text="Enter your GitHub OAuth Client ID",
                      font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(25, 10))
-        
+
         desc = ("To log in and post reviews, you need a GitHub OAuth Client ID.\n\n"
                 "1. Go to GitHub Settings -> Developer Settings -> OAuth Apps.\n"
                 "2. Create a new app and enable 'Device Flow'.\n"
                 "3. Copy the Client ID and paste it below.")
-        ctk.CTkLabel(win, text=desc, font=ctk.CTkFont(size=11), text_color="#9aa0a6", 
+        ctk.CTkLabel(win, text=desc, font=ctk.CTkFont(size=11), text_color="#9aa0a6",
                      justify="center", wraplength=360).pack(pady=(0, 20))
 
         entry = ctk.CTkEntry(win, width=280, placeholder_text="Paste Client ID here...")
@@ -1780,7 +2038,7 @@ class AppStoreApp(ctk.CTk):
             else:
                 tk.messagebox.showerror("Error", "Client ID cannot be empty.")
 
-        ctk.CTkButton(win, text="Save & Continue", width=160, height=36, 
+        ctk.CTkButton(win, text="Save & Continue", width=160, height=36,
                       corner_radius=18, command=save).pack(pady=20)
 
     def _show_profile_dialog(self):
@@ -1791,7 +2049,7 @@ class AppStoreApp(ctk.CTk):
         win.transient(self)
 
         username = self.config_db.get_username() or "User"
-        ctk.CTkLabel(win, text=f"Logged in as:", font=ctk.CTkFont(size=12), text_color="#9aa0a6").pack(pady=(30, 0))
+        ctk.CTkLabel(win, text="Logged in as:", font=ctk.CTkFont(size=12), text_color="#9aa0a6").pack(pady=(30, 0))
         ctk.CTkLabel(win, text=username, font=ctk.CTkFont(size=18, weight="bold"), text_color="#e8eaed").pack(pady=(0, 20))
 
         def logout():
@@ -1822,7 +2080,7 @@ class AppStoreApp(ctk.CTk):
         win.transient(self)
 
         ctk.CTkLabel(win, text="Link your GitHub Account", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(25, 15))
-        
+
         inst = ("1. Click the button below to open GitHub.\n"
                 "2. Sign in if required.\n"
                 "3. Enter the 8-digit code shown below.")
@@ -1830,8 +2088,8 @@ class AppStoreApp(ctk.CTk):
 
         code_frame = ctk.CTkFrame(win, fg_color="#1a1a30", corner_radius=10)
         code_frame.pack(pady=20, padx=40, fill="x")
-        
-        ctk.CTkLabel(code_frame, text=user_code, font=ctk.CTkFont(size=36, weight="bold", family="monospace"), 
+
+        ctk.CTkLabel(code_frame, text=user_code, font=ctk.CTkFont(size=36, weight="bold", family="monospace"),
                      text_color="#7eb3ff").pack(pady=15)
 
         status_lbl = ctk.CTkLabel(win, text="Waiting for authorization...", font=ctk.CTkFont(size=12, slant="italic"), text_color="#555")
@@ -1840,7 +2098,7 @@ class AppStoreApp(ctk.CTk):
         def open_browser():
             webbrowser.open(verification_uri)
 
-        ctk.CTkButton(win, text="Open Browser", width=200, height=40, corner_radius=20, 
+        ctk.CTkButton(win, text="Open Browser", width=200, height=40, corner_radius=20,
                       font=ctk.CTkFont(size=14, weight="bold"), command=open_browser).pack(pady=20)
 
         def wait():
@@ -1852,7 +2110,7 @@ class AppStoreApp(ctk.CTk):
                 if user:
                     self.config_db.set_username(user.get("login"))
                     self.config_db.set_display_name(user.get("name") or user.get("login"))
-                
+
                 self.after(0, lambda: (
                     win.destroy(),
                     self._profile_btn.configure(text_color="#34a853"),
