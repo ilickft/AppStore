@@ -13,76 +13,20 @@ from io import BytesIO
 
 SEARCH_QUERY = "termux+desktop+OR+termux+gui+OR+termux+x11+OR+topic:termux-desktop+OR+topic:termux-x11"
 GITHUB_API_BASE = "https://api.github.com"
-CLIENT_ID = "Iv1.b08f870e6c6c180a"
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
 APPSTORE_REPO_URL = "https://github.com/ilickft/AppStore/"
 INSTALL_BASE = os.path.expanduser("~/.appstore/apps")
 INSTALL_DB_PATH = os.path.expanduser("~/.appstore/installed.json")
+CONFIG_PATH = os.path.expanduser("~/.config/appstore/config.json")
 
 os.makedirs(INSTALL_BASE, exist_ok=True)
 os.makedirs(os.path.dirname(INSTALL_DB_PATH), exist_ok=True)
-
-
-def _circle_crop(img, size):
-    img = img.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
-    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    out.paste(img, mask=mask)
-    return out
-
-
-def _placeholder_icon(name, size):
-    palette = ["#1a3a6a", "#2d1a6a", "#1a4a3a", "#4a2d1a", "#3a1a4a", "#1a4a4a", "#4a1a2e"]
-    color = palette[sum(ord(c) for c in (name or "?")) % len(palette)]
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse((0, 0, size - 1, size - 1), fill=color)
-    letter = (name or "?")[0].upper()
-    draw.text((size // 2 - size // 9, size // 2 - size // 7), letter, fill="#ffffff")
-    return img
-
-
-class InstalledDB:
-    def __init__(self):
-        self._db = {}
-        self._load()
-
-    def _load(self):
-        if os.path.exists(INSTALL_DB_PATH):
-            try:
-                with open(INSTALL_DB_PATH) as f:
-                    self._db = json.load(f)
-            except Exception:
-                self._db = {}
-
-    def _save(self):
-        with open(INSTALL_DB_PATH, "w") as f:
-            json.dump(self._db, f, indent=2)
-
-    def is_installed(self, full_name):
-        return full_name in self._db and os.path.isdir(self._db[full_name].get("path", ""))
-
-    def get(self, full_name):
-        return self._db.get(full_name)
-
-    def add(self, full_name, name, path, pushed_at):
-        self._db[full_name] = {"name": name, "path": path, "pushed_at": pushed_at}
-        self._save()
-
-    def remove(self, full_name):
-        self._db.pop(full_name, None)
-        self._save()
-
-    def needs_update(self, full_name, current_pushed_at):
-        entry = self._db.get(full_name)
-        return bool(entry and entry.get("pushed_at", "") < current_pushed_at)
+os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
 
 
 class ConfigDB:
     def __init__(self):
-        self._path = os.path.expanduser("~/.config/appstore/config.json")
-        os.makedirs(os.path.dirname(self._path), exist_ok=True)
+        self._path = CONFIG_PATH
         self._data = {}
         self._load()
 
@@ -120,6 +64,13 @@ class ConfigDB:
 
     def get_username(self):
         return self._data.get("username")
+
+    def get_client_id(self):
+        return self._data.get("client_id")
+
+    def set_client_id(self, client_id):
+        self._data["client_id"] = client_id
+        self._save()
 
 
 class GitHubAPI:
@@ -219,11 +170,11 @@ class GitHubAPI:
             return []
         return re.findall(r'!\[.*?\]\((.*?)\)', text)
 
-    def start_device_flow(self):
+    def start_device_flow(self, client_id):
         try:
             r = requests.post(
                 "https://github.com/login/device/code",
-                data={"client_id": CLIENT_ID, "scope": "public_repo"},
+                data={"client_id": client_id, "scope": "public_repo"},
                 headers={"Accept": "application/json"}, timeout=10
             )
             if r.status_code == 200:
@@ -234,9 +185,9 @@ class GitHubAPI:
             print(f"Auth request exception: {e}")
         return None
 
-    def poll_for_token(self, device_code, interval):
+    def poll_for_token(self, client_id, device_code, interval):
         data = {
-            "client_id": CLIENT_ID,
+            "client_id": client_id,
             "device_code": device_code,
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
         }
@@ -920,7 +871,43 @@ class AppStoreApp(ctk.CTk):
         if self.api.token:
             self._show_profile_dialog()
         else:
-            self._show_login_dialog()
+            client_id = self.config.get_client_id()
+            if not client_id:
+                self._show_client_id_dialog()
+            else:
+                self._show_login_dialog(client_id)
+
+    def _show_client_id_dialog(self):
+        win = ctk.CTkToplevel(self)
+        win.title("GitHub Setup")
+        win.geometry("420x300")
+        win.configure(fg_color="#0f0f1a")
+        win.transient(self)
+
+        ctk.CTkLabel(win, text="Enter your GitHub OAuth Client ID", 
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(25, 10))
+        
+        desc = ("To log in and post reviews, you need a GitHub OAuth Client ID.\n\n"
+                "1. Go to GitHub Settings -> Developer Settings -> OAuth Apps.\n"
+                "2. Create a new app and enable 'Device Flow'.\n"
+                "3. Copy the Client ID and paste it below.")
+        ctk.CTkLabel(win, text=desc, font=ctk.CTkFont(size=11), text_color="#9aa0a6", 
+                     justify="center", wraplength=360).pack(pady=(0, 20))
+
+        entry = ctk.CTkEntry(win, width=280, placeholder_text="Paste Client ID here...")
+        entry.pack(pady=5)
+
+        def save():
+            cid = entry.get().strip()
+            if cid:
+                self.config.set_client_id(cid)
+                win.destroy()
+                self._show_login_dialog(cid)
+            else:
+                tk.messagebox.showerror("Error", "Client ID cannot be empty.")
+
+        ctk.CTkButton(win, text="Save & Continue", width=160, height=36, 
+                      corner_radius=18, command=save).pack(pady=20)
 
     def _show_profile_dialog(self):
         win = ctk.CTkToplevel(self)
@@ -942,10 +929,11 @@ class AppStoreApp(ctk.CTk):
 
         ctk.CTkButton(win, text="Logout", fg_color="#4a1a1a", hover_color="#6a1a1a", command=logout).pack(pady=10)
 
-    def _show_login_dialog(self):
-        data = self.api.start_device_flow()
+    def _show_login_dialog(self, client_id):
+        data = self.api.start_device_flow(client_id)
         if not data:
-            tk.messagebox.showerror("Error", "Could not connect to GitHub login service.")
+            tk.messagebox.showerror("Error", "Could not connect to GitHub. Is your Client ID valid and 'Device Flow' enabled?")
+            self.config.set_client_id(None) # Allow retry
             return
 
         user_code = data["user_code"]
@@ -982,7 +970,7 @@ class AppStoreApp(ctk.CTk):
                       font=ctk.CTkFont(size=14, weight="bold"), command=open_browser).pack(pady=20)
 
         def wait():
-            token = self.api.poll_for_token(device_code, interval)
+            token = self.api.poll_for_token(client_id, device_code, interval)
             if token:
                 self.api.set_token(token)
                 self.config.set_token(token)
