@@ -267,7 +267,7 @@ class ConfigDB:
         self._save()
 
     def get_show_category_badge(self):
-        return self._data.get("show_category_badge", True)
+        return self._data.get("show_category_badge", False)
 
     def set_show_category_badge(self, val):
         self._data["show_category_badge"] = bool(val)
