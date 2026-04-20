@@ -49,6 +49,7 @@ The AppStore is also subdirectory-based. To add your project to the store manual
 3.  **Required Files** in your folder:
     *   `readme.md`: Descriptive information and screenshots.
     *   `icon.png`: A high-quality image (will be automatically cropped to a rounded square).
+    *   `1.0.0`: An empty file as version in file name
     *   `install.sh`: A script to handle the installation logic.
     *   `launch.sh`: A script to launch the application.
     *   `uninstall.sh` (Optional): A script to clean up files during removal.

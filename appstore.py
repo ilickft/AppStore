@@ -16,7 +16,7 @@ from io import BytesIO
 GITHUB_API_BASE = "https://api.github.com"
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
 APPSTORE_REPO_URL = "https://github.com/ilickft/AppStore/"
-APPSTORE_VERSION = "3.2.0"
+APPSTORE_VERSION = "3.2.5"
 INSTALL_BASE = os.path.expanduser("~/.appstore/apps")
 INSTALL_DB_PATH = os.path.expanduser("~/.appstore/installed.json")
 CONFIG_PATH = os.path.expanduser("~/.config/appstore/config.json")
@@ -980,13 +980,11 @@ class AppStoreApp(ctk.CTk):
             self._apply_filter()
             return
 
-        # Load from cache first
         cached_apps = self.cache_db.load()
         if cached_apps:
             self.loaded_apps = cached_apps
             self._apps_fetched = True
             self._apply_filter()
-            # Silently refresh in background
             threading.Thread(target=self._fetch_apps, daemon=True).start()
             return
 
@@ -1009,12 +1007,10 @@ class AppStoreApp(ctk.CTk):
     def _fetch_apps(self):
         self.api.fetch_verified_repos()
         
-        # Load cache for fallback
         cached = self.cache_db.load() or []
         
         apps, errors = self.api.search_apps()
         
-        # Error resilience for hardcoded repos
         fetch_err_counts = self.config_db.get_fetch_errors()
         final_apps = list(apps)
         
@@ -1023,7 +1019,6 @@ class AppStoreApp(ctk.CTk):
             if has_error:
                 count = fetch_err_counts.get(repo, 0) + 1
                 if count < 3:
-                    # Merge from cache for this repo
                     repo_cached = [a for a in cached if a.get("full_name", "").startswith(repo)]
                     seen_fns = {a["full_name"] for a in final_apps}
                     for r_a in repo_cached:
@@ -1031,7 +1026,7 @@ class AppStoreApp(ctk.CTk):
                             final_apps.append(r_a)
                     fetch_err_counts[repo] = count
                 else:
-                    fetch_err_counts[repo] = 0 # Fails 3 times, reset and let it be empty
+                    fetch_err_counts[repo] = 0
             else:
                 fetch_err_counts[repo] = 0
                 
@@ -1221,10 +1216,46 @@ class AppStoreApp(ctk.CTk):
         if is_verified:
             publisher += " ✓"
 
-        ctk.CTkLabel(
-            info_col, text=publisher,
+        self._ver_pub_lbl = ctk.CTkLabel(
+            info_col, text=f"v... | {publisher}",
             font=ctk.CTkFont(size=12), text_color="#1a73e8", anchor="w"
-        ).pack(fill="x", pady=(2, 6))
+        )
+        self._ver_pub_lbl.pack(fill="x", pady=(2, 6))
+
+        def check_version():
+            remote_v = None
+            repo, sub = full_name.split(":", 1) if ":" in full_name else (full_name, "")
+            try:
+                r = requests.get(f"{GITHUB_API_BASE}/repos/{repo}/contents/{sub}", headers=self.api.headers, timeout=5)
+                if r.status_code == 200:
+                    for item in r.json():
+                        if item.get("type") == "file" and re.match(r'^v?\d+\.\d+(\.\d+)?(-[\w.]+)?$', item.get("name")):
+                            remote_v = item.get("name")
+                            break
+            except: pass
+
+            local_v = None
+            if self.db.is_installed(full_name):
+                path = os.path.join(INSTALL_BASE, name)
+                try:
+                    for f in os.listdir(path):
+                        if os.path.isfile(os.path.join(path, f)) and re.match(r'^v?\d+\.\d+(\.\d+)?(-[\w.]+)?$', f):
+                            local_v = f
+                            break
+                except: pass
+
+            def update_ui():
+                if not self.detail_view.winfo_exists() or self._current_viewing_fn != full_name: return
+                v_str = f"v{remote_v}" if remote_v else "v?.?.?"
+                self._ver_pub_lbl.configure(text=f"{v_str} | {publisher}")
+                
+                if local_v and remote_v and local_v != remote_v:
+                    self._primary_btn.configure(text=f"Update to {v_str}", fg_color="#e65c00", hover_color="#b34700")
+                    self._primary_btn._action_text = "Update"
+
+            self.after(0, update_ui)
+
+        threading.Thread(target=check_version, daemon=True).start()
 
         meta_row = ctk.CTkFrame(info_col, fg_color="transparent")
         meta_row.pack(fill="x")
@@ -1364,7 +1395,7 @@ class AppStoreApp(ctk.CTk):
                     width=150, height=42, corner_radius=21,
                     fg_color=primary_fg, hover_color=primary_hv,
                     font=ctk.CTkFont(size=14, weight="bold"),
-                    command=lambda: self._primary_action(app, primary_text)
+                    command=lambda: self._primary_action(app, self._primary_btn.cget("text"))
                 )
                 self._primary_btn.pack(side="left", padx=(0, 10))
 
@@ -1989,10 +2020,12 @@ class AppStoreApp(ctk.CTk):
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _primary_action(self, app, action):
-        if action in ("Install", "Update"):
-            self._enqueue_install(app, is_update=(action == "Update"))
-        elif action == "Launch":
+    def _primary_action(self, app, action_text):
+        if action_text == "Install":
+            self._enqueue_install(app, is_update=False)
+        elif action_text == "Update" or action_text.startswith("Update to"):
+            self._enqueue_install(app, is_update=True)
+        elif action_text == "Launch":
             self._launch(app)
 
     def _enqueue_install(self, app, is_update=False):
