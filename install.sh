@@ -20,7 +20,7 @@ pip install customtkinter requests pillow
 APP_DIR="/data/data/com.termux/files/home/.local/share/termux-appstore"
 mkdir -p "$APP_DIR"
 cp appstore.py "$APP_DIR/"
-cp AppStore.png "$APP_DIR/"
+cp icon.png "$APP_DIR/"
 
 # 4. Create Binary Wrapper
 echo "Creating binary wrapper..."
@@ -43,7 +43,7 @@ Type=Application
 Name=AppStore
 Comment=Install Open Source Apps for Termux
 Exec=termux-appstore
-Icon=$APP_DIR/AppStore.png
+Icon=$APP_DIR/icon.png
 Categories=System;Settings;
 Terminal=false
 EOF
