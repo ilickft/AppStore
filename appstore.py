@@ -16,7 +16,7 @@ from io import BytesIO
 GITHUB_API_BASE = "https://api.github.com"
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
 APPSTORE_REPO_URL = "https://github.com/ilickft/AppStore/"
-APPSTORE_VERSION = "1.2.1"
+APPSTORE_VERSION = "2.1.9"
 INSTALL_BASE = os.path.expanduser("~/.appstore/apps")
 INSTALL_DB_PATH = os.path.expanduser("~/.appstore/installed.json")
 CONFIG_PATH = os.path.expanduser("~/.config/appstore/config.json")
@@ -340,12 +340,17 @@ class GitHubAPI:
 
     def check_appstore_update(self):
         try:
-            raw_url = "https://raw.githubusercontent.com/ilickft/AppStore/main/appstore.py"
-            r = requests.get(raw_url, timeout=5)
+            url = f"{GITHUB_API_BASE}/repos/ilickft/AppStore/contents"
+            r = requests.get(url, headers=self.headers, timeout=8)
             if r.status_code == 200:
-                match = re.search(r'APPSTORE_VERSION\s*=\s*"([^"]+)"', r.text)
-                if match:
-                    return match.group(1)
+                versions = []
+                for item in r.json():
+                    name = item.get("name", "")
+                    if re.match(r'^\d+\.\d+\.\d+$', name):
+                        versions.append(name)
+                if versions:
+                    versions.sort(key=lambda x: [int(v) for v in x.split('.')])
+                    return versions[-1]
         except Exception:
             pass
         return None
@@ -405,6 +410,7 @@ class AppStoreApp(ctk.CTk):
         self.api = GitHubAPI()
         self.config_db = ConfigDB()
         self.db = InstalledDB()
+        self.remote_appstore_version = None
 
         saved_token = self.config_db.get_token()
         if saved_token:
@@ -472,10 +478,11 @@ class AppStoreApp(ctk.CTk):
 
     def _check_updates_silent(self):
         remote_v = self.api.check_appstore_update()
+        self.remote_appstore_version = remote_v
         if remote_v and remote_v != APPSTORE_VERSION:
             self.after(0, lambda: self._update_btn.configure(text="⤒ ●", text_color="#ff9800"))
         elif remote_v == APPSTORE_VERSION:
-            self.after(0, lambda: self._update_btn.configure(text="⤒ ●", text_color="#34a853"))
+            self.after(0, lambda: self._update_btn.configure(text="⤒ ●", text_color="#34a853") if self._update_btn.winfo_exists() else None)
 
     def _build_header(self):
         hdr = ctk.CTkFrame(self, height=52, corner_radius=0, fg_color="#12122a")
@@ -1228,13 +1235,17 @@ class AppStoreApp(ctk.CTk):
             ).pack(side="left", padx=(0, 10))
         else:
             if is_appstore:
-                primary_text, primary_fg, primary_hv = "Installed", "#34a853", "#34a853"
+                if self.remote_appstore_version and self.remote_appstore_version != APPSTORE_VERSION:
+                    primary_text, primary_fg, primary_hv = f"Update to {self.remote_appstore_version}", "#e65c00", "#b34700"
+                else:
+                    primary_text, primary_fg, primary_hv = "Check & Update", "#1a73e8", "#1256b4"
+
                 self._primary_btn = ctk.CTkButton(
                     btn_row, text=primary_text,
-                    width=150, height=42, corner_radius=21,
+                    width=170, height=42, corner_radius=21,
                     fg_color=primary_fg, hover_color=primary_hv,
                     font=ctk.CTkFont(size=14, weight="bold"),
-                    state="disabled"
+                    command=lambda: self._check_and_update_appstore_silent(app)
                 )
                 self._primary_btn.pack(side="left", padx=(0, 10))
             else:
@@ -1301,6 +1312,24 @@ class AppStoreApp(ctk.CTk):
 
         if is_active:
             self._install_progress_frame.pack(fill="x", pady=(8, 0))
+
+    def _check_and_update_appstore_silent(self, app):
+        self._primary_btn.configure(state="disabled", text="Checking...")
+
+        def run():
+            remote_v = self.api.check_appstore_update()
+            self.remote_appstore_version = remote_v
+            if remote_v and remote_v != APPSTORE_VERSION:
+                self.after(0, lambda: (
+                    self._do_update_appstore()
+                ))
+            else:
+                self.after(0, lambda: (
+                    self._show_notification("AppStore is up to date", color="#1e7e34"),
+                    self._primary_btn.configure(state="normal", text="Check & Update") if self._primary_btn.winfo_exists() else None
+                ))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _load_detail_icon(self, url):
         try:
