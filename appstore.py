@@ -20,6 +20,7 @@ APPSTORE_VERSION = "2.1.11"
 INSTALL_BASE = os.path.expanduser("~/.appstore/apps")
 INSTALL_DB_PATH = os.path.expanduser("~/.appstore/installed.json")
 CONFIG_PATH = os.path.expanduser("~/.config/appstore/config.json")
+APP_CACHE_PATH = os.path.expanduser("~/.appstore/cache.json")
 
 os.makedirs(INSTALL_BASE, exist_ok=True)
 os.makedirs(os.path.dirname(INSTALL_DB_PATH), exist_ok=True)
@@ -178,6 +179,55 @@ class ConfigDB:
     def set_client_id(self, client_id):
         self._data["client_id"] = client_id
         self._save()
+
+    def get_theme(self):
+        return self._data.get("theme", "dark")
+
+    def set_theme(self, theme):
+        self._data["theme"] = theme
+        self._save()
+
+    def get_auto_update(self):
+        return self._data.get("auto_update", False)
+
+    def set_auto_update(self, val):
+        self._data["auto_update"] = val
+        self._save()
+
+    def get_fetch_errors(self):
+        return self._data.get("fetch_errors", {})
+
+    def set_fetch_errors(self, errors_dict):
+        self._data["fetch_errors"] = errors_dict
+        self._save()
+
+
+class CacheDB:
+    def __init__(self):
+        self._path = APP_CACHE_PATH
+
+    def load(self):
+        if os.path.exists(self._path):
+            try:
+                with open(self._path) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return None
+
+    def save(self, apps):
+        try:
+            with open(self._path, "w") as f:
+                json.dump(apps, f, indent=2)
+        except Exception:
+            pass
+
+    def clear(self):
+        if os.path.exists(self._path):
+            try:
+                os.remove(self._path)
+            except:
+                pass
 
 
 class GitHubAPI:
@@ -413,7 +463,10 @@ class AppStoreApp(ctk.CTk):
         self.api = GitHubAPI()
         self.config_db = ConfigDB()
         self.db = InstalledDB()
+        self.cache_db = CacheDB()
         self.remote_appstore_version = None
+
+        ctk.set_appearance_mode(self.config_db.get_theme())
 
         saved_token = self.config_db.get_token()
         if saved_token:
@@ -483,7 +536,10 @@ class AppStoreApp(ctk.CTk):
         remote_v = self.api.check_appstore_update()
         self.remote_appstore_version = remote_v
         if remote_v and remote_v != APPSTORE_VERSION:
-            self.after(0, lambda: self._update_btn.configure(text="⤒ ●", text_color="#ff9800"))
+            if self.config_db.get_auto_update():
+                self.after(0, self._do_update_appstore)
+            else:
+                self.after(0, lambda: self._update_btn.configure(text="⤒ ●", text_color="#ff9800"))
         elif remote_v == APPSTORE_VERSION:
             self.after(0, lambda: self._update_btn.configure(text="⤒ ●", text_color="#34a853") if self._update_btn.winfo_exists() else None)
 
@@ -515,7 +571,10 @@ class AppStoreApp(ctk.CTk):
         self._update_btn.pack(side="left", padx=1)
 
         self._profile_btn = ctk.CTkButton(icons_frame, text="◉", command=self._login, **ibtn)
-        self._profile_btn.pack(side="left", padx=(1, 4))
+        self._profile_btn.pack(side="left", padx=1)
+
+        self._settings_btn = ctk.CTkButton(icons_frame, text="⚙", command=self._show_settings_dialog, **ibtn)
+        self._settings_btn.pack(side="left", padx=(1, 4))
 
     def _build_tabs(self):
         self._tabs_row = ctk.CTkFrame(self, height=40, corner_radius=0, fg_color="#0f0f1a")
@@ -921,6 +980,16 @@ class AppStoreApp(ctk.CTk):
             self._apply_filter()
             return
 
+        # Load from cache first
+        cached_apps = self.cache_db.load()
+        if cached_apps:
+            self.loaded_apps = cached_apps
+            self._apps_fetched = True
+            self._apply_filter()
+            # Silently refresh in background
+            threading.Thread(target=self._fetch_apps, daemon=True).start()
+            return
+
         for w in self.home_view.winfo_children():
             w.destroy()
         self._tile_icon_labels.clear()
@@ -939,9 +1008,38 @@ class AppStoreApp(ctk.CTk):
 
     def _fetch_apps(self):
         self.api.fetch_verified_repos()
+        
+        # Load cache for fallback
+        cached = self.cache_db.load() or []
+        
         apps, errors = self.api.search_apps()
-        self.loaded_apps = apps
+        
+        # Error resilience for hardcoded repos
+        fetch_err_counts = self.config_db.get_fetch_errors()
+        final_apps = list(apps)
+        
+        for repo in ["App-Store-tmx/Games", "App-Store-tmx/Apps"]:
+            has_error = any(repo in e for e in errors)
+            if has_error:
+                count = fetch_err_counts.get(repo, 0) + 1
+                if count < 3:
+                    # Merge from cache for this repo
+                    repo_cached = [a for a in cached if a.get("full_name", "").startswith(repo)]
+                    seen_fns = {a["full_name"] for a in final_apps}
+                    for r_a in repo_cached:
+                        if r_a["full_name"] not in seen_fns:
+                            final_apps.append(r_a)
+                    fetch_err_counts[repo] = count
+                else:
+                    fetch_err_counts[repo] = 0 # Fails 3 times, reset and let it be empty
+            else:
+                fetch_err_counts[repo] = 0
+                
+        self.config_db.set_fetch_errors(fetch_err_counts)
+        self.loaded_apps = final_apps
+        self.cache_db.save(final_apps)
         self._apps_fetched = True
+        
         self.after(0, lambda: self._apply_filter())
         for err in errors:
             self.after(0, lambda e=err: self._show_notification(e, color="#c62828"))
@@ -2116,6 +2214,44 @@ class AppStoreApp(ctk.CTk):
             self.show_detail(app)
         except Exception as e:
             tk.messagebox.showerror("Error", str(e))
+
+    def _show_settings_dialog(self):
+        win = ctk.CTkToplevel(self)
+        win.title("Settings")
+        win.geometry("400x320")
+        win.configure(fg_color="#0f0f1a")
+        win.transient(self)
+
+        ctk.CTkLabel(win, text="Preferences", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(25, 20))
+
+        # Theme selection
+        theme_frame = ctk.CTkFrame(win, fg_color="transparent")
+        theme_frame.pack(fill="x", padx=40, pady=10)
+        ctk.CTkLabel(theme_frame, text="Theme:", font=ctk.CTkFont(size=13)).pack(side="left")
+
+        theme_opt = ctk.CTkOptionMenu(
+            theme_frame, values=["dark", "light", "system"],
+            command=lambda t: (self.config_db.set_theme(t), ctk.set_appearance_mode(t))
+        )
+        theme_opt.set(self.config_db.get_theme())
+        theme_opt.pack(side="right")
+
+        # Auto-update toggle
+        au_frame = ctk.CTkFrame(win, fg_color="transparent")
+        au_frame.pack(fill="x", padx=40, pady=10)
+        ctk.CTkLabel(au_frame, text="Auto-Update AppStore:", font=ctk.CTkFont(size=13)).pack(side="left")
+
+        au_var = tk.BooleanVar(value=self.config_db.get_auto_update())
+        au_sw = ctk.CTkSwitch(
+            au_frame, text="", variable=au_var,
+            command=lambda: self.config_db.set_auto_update(au_var.get())
+        )
+        au_sw.pack(side="right")
+
+        ctk.CTkLabel(win, text="Changes to Auto-Update will apply on next restart.",
+                     font=ctk.CTkFont(size=10), text_color="#555").pack(pady=(20, 0))
+
+        ctk.CTkButton(win, text="Close", width=100, command=win.destroy).pack(side="bottom", pady=25)
 
     def _login(self):
         if self.api.token:
