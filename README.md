@@ -38,6 +38,13 @@ After installation, you can launch the **AppStore** from your XFCE4 application 
 ## 🛠️ How to list your App/Game
 
 There are two ways to list your application in the AppStore:
+Before that make sure you have the **Required Files** in your repo's root dir.
+    *   `readme.md`: Descriptive information and screenshots.
+    *   `icon.png`: A high-quality image (will be automatically cropped to a rounded square).
+    *   `1.0.0`: An empty file as version in file name
+    *   `install.sh`: A script to handle the installation logic.
+    *   `launch.sh`: A script to launch the application.
+    *   `uninstall.sh` (Optional): A script to clean up files during removal.
 
 **Method 1: Tagging your repository (Recommended)**
 Simply add one of the following topics/tags to your GitHub repository:
@@ -50,13 +57,7 @@ The AppStore is also subdirectory-based. To add your project to the store manual
 
 1.  **Fork** the [Games](https://github.com/App-Store-tmx/Games) or [Apps](https://github.com/App-Store-tmx/Apps) repository.
 2.  **Create a Folder** with your application's name.
-3.  **Required Files** in your folder:
-    *   `readme.md`: Descriptive information and screenshots.
-    *   `icon.png`: A high-quality image (will be automatically cropped to a rounded square).
-    *   `1.0.0`: An empty file as version in file name
-    *   `install.sh`: A script to handle the installation logic.
-    *   `launch.sh`: A script to launch the application.
-    *   `uninstall.sh` (Optional): A script to clean up files during removal.
+3.  **Required Files** in your folder.
 4.  **Submit a Pull Request** to the main store repositories.
 
 ## 🔑 Authentication
