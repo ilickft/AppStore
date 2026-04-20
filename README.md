@@ -28,7 +28,11 @@ cd AppStore
 chmod +x install.sh
 ./install.sh
 ```
-
+NOTE: if the installation crashes, try installing the requirements then
+```
+chmod +x install.sh
+./install.sh
+```
 After installation, you can launch the **AppStore** from your XFCE4 application menu under **System** or **Settings**.
 
 ## 🛠️ How to list your App/Game
