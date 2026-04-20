@@ -33,7 +33,16 @@ After installation, you can launch the **AppStore** from your XFCE4 application 
 
 ## 🛠️ How to list your App/Game
 
-The AppStore is subdirectory-based. To add your project to the store:
+There are two ways to list your application in the AppStore:
+
+**Method 1: Tagging your repository (Recommended)**
+Simply add one of the following topics/tags to your GitHub repository:
+- `termux-desk-app` (for Apps)
+- `termux-desk-game` (for Games)
+- `termux-desk` or `termux-desk-tool` (for Public tools)
+
+**Method 2: Submitting to the main store repositories**
+The AppStore is also subdirectory-based. To add your project to the store manually:
 
 1.  **Fork** the [Games](https://github.com/App-Store-tmx/Games) or [Apps](https://github.com/App-Store-tmx/Apps) repository.
 2.  **Create a Folder** with your application's name.
