@@ -220,7 +220,7 @@ class GitHubAPI:
         return self.verified_repos
 
     def is_verified(self, full_name):
-        if full_name.startswith("App-Store-tmx/"):
+        if full_name.startswith("App-Store-tmx/") or full_name == "ilickft/AppStore":
             return True
         return full_name in self.verified_repos
 
@@ -394,7 +394,7 @@ class AppStoreApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
         self.configure(fg_color="#0f0f1a")
 
-        icon_path = os.path.join(os.path.dirname(__file__), "AppStore.png")
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
         if os.path.exists(icon_path):
             try:
                 img = tk.PhotoImage(file=icon_path)
@@ -1107,8 +1107,12 @@ class AppStoreApp(ctk.CTk):
             text_color="#e8eaed", anchor="w"
         ).pack(fill="x")
 
+        publisher = owner.get("login", "")
+        if is_verified:
+            publisher += " ✓"
+
         ctk.CTkLabel(
-            info_col, text=owner.get("login", ""),
+            info_col, text=publisher,
             font=ctk.CTkFont(size=12), text_color="#1a73e8", anchor="w"
         ).pack(fill="x", pady=(2, 6))
 
@@ -1194,9 +1198,10 @@ class AppStoreApp(ctk.CTk):
             w.destroy()
 
         full_name = app.get("full_name", "")
-        is_inst = self.db.is_installed(full_name)
+        is_appstore = full_name == "ilickft/AppStore"
+        is_inst = self.db.is_installed(full_name) or is_appstore
         pushed_at = app.get("pushed_at", "")
-        needs_upd = self.db.needs_update(full_name, pushed_at) if is_inst else False
+        needs_upd = self.db.needs_update(full_name, pushed_at) if (is_inst and not is_appstore) else False
         active_task = self._get_task(full_name)
         is_active = active_task is not None
 
@@ -1222,23 +1227,34 @@ class AppStoreApp(ctk.CTk):
                 command=lambda: self._cancel_task(active_task)
             ).pack(side="left", padx=(0, 10))
         else:
-            if not is_inst:
-                primary_text, primary_fg, primary_hv = "Install", "#1a73e8", "#1256b4"
-            elif needs_upd:
-                primary_text, primary_fg, primary_hv = "Update", "#e65c00", "#b34700"
+            if is_appstore:
+                primary_text, primary_fg, primary_hv = "Installed", "#34a853", "#34a853"
+                self._primary_btn = ctk.CTkButton(
+                    btn_row, text=primary_text,
+                    width=150, height=42, corner_radius=21,
+                    fg_color=primary_fg, hover_color=primary_hv,
+                    font=ctk.CTkFont(size=14, weight="bold"),
+                    state="disabled"
+                )
+                self._primary_btn.pack(side="left", padx=(0, 10))
             else:
-                primary_text, primary_fg, primary_hv = "Launch", "#1e7e34", "#155a24"
+                if not is_inst:
+                    primary_text, primary_fg, primary_hv = "Install", "#1a73e8", "#1256b4"
+                elif needs_upd:
+                    primary_text, primary_fg, primary_hv = "Update", "#e65c00", "#b34700"
+                else:
+                    primary_text, primary_fg, primary_hv = "Launch", "#1e7e34", "#155a24"
 
-            self._primary_btn = ctk.CTkButton(
-                btn_row, text=primary_text,
-                width=150, height=42, corner_radius=21,
-                fg_color=primary_fg, hover_color=primary_hv,
-                font=ctk.CTkFont(size=14, weight="bold"),
-                command=lambda: self._primary_action(app, primary_text)
-            )
-            self._primary_btn.pack(side="left", padx=(0, 10))
+                self._primary_btn = ctk.CTkButton(
+                    btn_row, text=primary_text,
+                    width=150, height=42, corner_radius=21,
+                    fg_color=primary_fg, hover_color=primary_hv,
+                    font=ctk.CTkFont(size=14, weight="bold"),
+                    command=lambda: self._primary_action(app, primary_text)
+                )
+                self._primary_btn.pack(side="left", padx=(0, 10))
 
-            if is_inst:
+            if is_inst and not is_appstore:
                 ctk.CTkButton(
                     btn_row, text="Uninstall",
                     width=110, height=42, corner_radius=21,
