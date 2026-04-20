@@ -16,7 +16,7 @@ from io import BytesIO
 GITHUB_API_BASE = "https://api.github.com"
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
 APPSTORE_REPO_URL = "https://github.com/ilickft/AppStore/"
-APPSTORE_VERSION = "3.6.5"
+APPSTORE_VERSION = "3.6.6"
 INSTALL_BASE = os.path.expanduser("~/.appstore/apps")
 INSTALL_DB_PATH = os.path.expanduser("~/.appstore/installed.json")
 CONFIG_PATH = os.path.expanduser("~/.config/appstore/config.json")
