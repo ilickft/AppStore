@@ -16,7 +16,7 @@ from io import BytesIO
 GITHUB_API_BASE = "https://api.github.com"
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
 APPSTORE_REPO_URL = "https://github.com/ilickft/AppStore/"
-APPSTORE_VERSION = "2.1.9"
+APPSTORE_VERSION = "2.1.11"
 INSTALL_BASE = os.path.expanduser("~/.appstore/apps")
 INSTALL_DB_PATH = os.path.expanduser("~/.appstore/installed.json")
 CONFIG_PATH = os.path.expanduser("~/.config/appstore/config.json")
@@ -254,6 +254,7 @@ class GitHubAPI:
 
     def search_apps(self):
         all_apps = []
+        errors = []
 
         repos = ["App-Store-tmx/Games", "App-Store-tmx/Apps"]
         for repo_full_name in repos:
@@ -278,8 +279,10 @@ class GitHubAPI:
                                 "icon_url": f"https://raw.githubusercontent.com/{repo_full_name}/main/{item['name']}/icon.png"
                             }
                             all_apps.append(app)
-            except Exception:
-                pass
+                else:
+                    errors.append(f"Failed to load {repo_full_name} (Code {r.status_code})")
+            except Exception as e:
+                errors.append(f"Error loading {repo_full_name}: {str(e)[:30]}")
 
         tagged_apps = self.search_by_topic("termux-desk-app")
         for a in tagged_apps:
@@ -305,7 +308,7 @@ class GitHubAPI:
             if key not in seen:
                 unique.append(a)
                 seen.add(key)
-        return unique
+        return unique, errors
 
     def _get_repo(self, full_name):
         try:
@@ -936,10 +939,12 @@ class AppStoreApp(ctk.CTk):
 
     def _fetch_apps(self):
         self.api.fetch_verified_repos()
-        apps = self.api.search_apps()
+        apps, errors = self.api.search_apps()
         self.loaded_apps = apps
         self._apps_fetched = True
         self.after(0, lambda: self._apply_filter())
+        for err in errors:
+            self.after(0, lambda e=err: self._show_notification(e, color="#c62828"))
 
     def _render_home(self, apps):
         for w in self.home_view.winfo_children():
