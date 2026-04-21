@@ -16,11 +16,13 @@ from io import BytesIO
 GITHUB_API_BASE = "https://api.github.com"
 VERIFIED_REPOS_URL = "https://raw.githubusercontent.com/ilickft/AppStore/refs/heads/main/repos.txt"
 APPSTORE_REPO_URL = "https://github.com/ilickft/AppStore/"
-APPSTORE_VERSION = "3.6.6"
+APPSTORE_VERSION = "3.7.0"
 INSTALL_BASE = os.path.expanduser("~/.appstore/apps")
 INSTALL_DB_PATH = os.path.expanduser("~/.appstore/installed.json")
 CONFIG_PATH = os.path.expanduser("~/.config/appstore/config.json")
 APP_CACHE_PATH = os.path.expanduser("~/.appstore/cache.json")
+GITHUB_ID_PATH = os.path.expanduser("~/.appstore/github_id.json")
+USER_INFO_PATH = os.path.expanduser("~/.config/appstore/user.json")
 
 os.makedirs(INSTALL_BASE, exist_ok=True)
 os.makedirs(os.path.dirname(INSTALL_DB_PATH), exist_ok=True)
@@ -577,6 +579,7 @@ class AppStoreApp(ctk.CTk):
         saved_token = self.config_db.get_token()
         if saved_token:
             self.api.set_token(saved_token)
+            self._verify_and_refresh_user()
 
         self.loaded_apps = []
         self._apps_fetched = False
@@ -874,7 +877,7 @@ class AppStoreApp(ctk.CTk):
             w.destroy()
 
         header_row = ctk.CTkFrame(self.downloads_view, fg_color="transparent")
-        header_row.pack(fill="x", padx=20, pady=(20, 10))
+        header_row.pack(fill="x", padx=20, pady=(20, 6))
 
         ctk.CTkLabel(header_row, text="Download History",
                      font=ctk.CTkFont(size=18, weight="bold"), text_color=TEXT_PRI).pack(side="left")
@@ -892,14 +895,58 @@ class AppStoreApp(ctk.CTk):
                     ]
                 self._render_downloads_list()
 
-            ctk.CTkButton(header_row, text="Clear", width=70, height=28, corner_radius=14,
+            ctk.CTkButton(header_row, text="Clear All", width=80, height=28, corner_radius=14,
                           fg_color=BG_CARD2, hover_color=BG_HOVER, text_color=TEXT_SEC,
                           font=ctk.CTkFont(size=12), command=clear_done).pack(side="right")
+
+        search_frame = ctk.CTkFrame(self.downloads_view, fg_color=BG_SECTION, corner_radius=8)
+        search_frame.pack(fill="x", padx=20, pady=(0, 10))
+        self._dl_search_var = tk.StringVar()
+        self._dl_search_entry = ctk.CTkEntry(
+            search_frame, textvariable=self._dl_search_var,
+            placeholder_text="Search download history...",
+            height=32, font=ctk.CTkFont(size=13),
+            fg_color=BG_INPUT, border_color=BORDER, border_width=1
+        )
+        self._dl_search_entry.pack(fill="x", padx=10, pady=6)
+        self._dl_search_var.trace_add("write", lambda *_: self._filter_downloads(history))
 
         if not history:
             ctk.CTkLabel(self.downloads_view, text="No downloads yet.",
                          text_color=TEXT_MUTED, font=ctk.CTkFont(size=13)).pack(pady=40)
             return
+
+        self._dl_cards_frame = ctk.CTkFrame(self.downloads_view, fg_color="transparent")
+        self._dl_cards_frame.pack(fill="x")
+        self._dl_all_history = history
+        self._render_dl_cards(history)
+
+    def _fmt_time_ago(self, ts):
+        if not ts:
+            return ""
+        diff = int(time.time() - ts)
+        if diff < 60:
+            return f"{diff}s ago"
+        elif diff < 3600:
+            return f"{diff // 60}m ago"
+        elif diff < 86400:
+            return f"{diff // 3600}h ago"
+        else:
+            return f"{diff // 86400}d ago"
+
+    def _filter_downloads(self, history):
+        q = self._dl_search_var.get().strip().lower()
+        if not q:
+            filtered = history
+        else:
+            filtered = [t for t in history if q in t["app"].get("name", "").lower()]
+        self._render_dl_cards(filtered)
+
+    def _render_dl_cards(self, tasks):
+        if not hasattr(self, "_dl_cards_frame") or not self._dl_cards_frame.winfo_exists():
+            return
+        for w in self._dl_cards_frame.winfo_children():
+            w.destroy()
 
         status_colors = {
             "Pending": "#9aa0a6",
@@ -911,25 +958,79 @@ class AppStoreApp(ctk.CTk):
             "Completed": "#34a853",
             "Failed": "#ff4b4b",
             "Cancelled": "#666",
+            "Uninstalled": "#888899",
         }
 
         compact = self.config_db.get_compact_downloads()
+        icon_size = 36
 
-        for task in history:
+        for task in tasks:
             app = task["app"]
+            full_name = app.get("full_name", "")
+            name = app.get("name", "")
             status = task.get("status", "Pending")
             progress = task.get("progress", 0.0)
             is_done = task.get("finished") or task.get("error") or task.get("cancelled")
             paused = task.get("paused", False)
+            queued_at = task.get("queued_at")
 
-            card = ctk.CTkFrame(self.downloads_view, fg_color=BG_CARD, corner_radius=10)
+            card = ctk.CTkFrame(self._dl_cards_frame, fg_color=BG_CARD, corner_radius=10)
             card.pack(fill="x", padx=20, pady=3 if compact else 4)
 
             top = ctk.CTkFrame(card, fg_color="transparent")
-            top.pack(fill="x", padx=12, pady=(8 if compact else 10, 4))
+            top.pack(fill="x", padx=10, pady=(8 if compact else 10, 4))
 
-            ctk.CTkLabel(top, text=app.get("name", ""),
-                         font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_PRI).pack(side="left")
+            if is_done:
+                def make_clear(t=task):
+                    def do_clear():
+                        with self._queue_lock:
+                            if t in self._download_history:
+                                self._download_history.remove(t)
+                        self._render_downloads_list()
+                    return do_clear
+                x_btn = ctk.CTkButton(
+                    top, text="✕", width=20, height=20, corner_radius=10,
+                    fg_color="transparent", hover_color=BG_HOVER,
+                    text_color=TEXT_MUTED, font=ctk.CTkFont(size=11),
+                    command=make_clear()
+                )
+                x_btn.pack(side="left", padx=(0, 6))
+
+            icon_bg = ctk.CTkFrame(top, width=icon_size, height=icon_size,
+                                   fg_color=BG_CARD2, corner_radius=icon_size // 4)
+            icon_bg.pack(side="left", padx=(0, 10))
+            icon_bg.pack_propagate(False)
+            ph = _placeholder_icon(name, icon_size)
+            ctk_ph = ctk.CTkImage(light_image=ph, dark_image=ph, size=(icon_size, icon_size))
+            ref_key = f"dl_icon_{full_name}"
+            self._ctk_img_refs[ref_key] = ctk_ph
+            icon_lbl = ctk.CTkLabel(icon_bg, image=ctk_ph, text="",
+                                    width=icon_size, height=icon_size)
+            icon_lbl.place(relx=0.5, rely=0.5, anchor="center")
+
+            icon_url = app.get("icon_url")
+            icon_path = app.get("icon_path")
+            if icon_path and os.path.exists(icon_path):
+                threading.Thread(
+                    target=self._load_dl_icon, args=(icon_lbl, icon_path, icon_size, ref_key, False), daemon=True
+                ).start()
+            elif icon_url:
+                threading.Thread(
+                    target=self._load_dl_icon, args=(icon_lbl, icon_url, icon_size, ref_key, True), daemon=True
+                ).start()
+
+            name_col = ctk.CTkFrame(top, fg_color="transparent")
+            name_col.pack(side="left", fill="both", expand=True)
+
+            ctk.CTkLabel(name_col, text=name,
+                         font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_PRI,
+                         anchor="w").pack(fill="x")
+
+            time_str = self._fmt_time_ago(queued_at)
+            if time_str:
+                ctk.CTkLabel(name_col, text=time_str,
+                             font=ctk.CTkFont(size=10), text_color=TEXT_MUTED,
+                             anchor="w").pack(fill="x")
 
             sc = status_colors.get(status, "#9aa0a6")
             ctk.CTkLabel(top, text=status, font=ctk.CTkFont(size=11), text_color=sc).pack(side="right")
@@ -946,15 +1047,19 @@ class AppStoreApp(ctk.CTk):
 
             if not compact:
                 btn_row = ctk.CTkFrame(card, fg_color="transparent")
-                btn_row.pack(fill="x", padx=12, pady=(0, 10))
+                has_buttons = False
 
                 if status == "Pending":
+                    has_buttons = True
+                    btn_row.pack(fill="x", padx=12, pady=(0, 10))
                     ctk.CTkButton(btn_row, text="Cancel", width=80, height=26, corner_radius=13,
                                   fg_color="#2a0a0a", hover_color="#4a1010", text_color="#ff6b6b",
                                   border_width=1, border_color="#5a1a1a", font=ctk.CTkFont(size=11),
                                   command=lambda t=task: self._cancel_task(t)).pack(side="left", padx=(0, 6))
 
                 elif status in ("Cloning", "Downloading", "Paused"):
+                    has_buttons = True
+                    btn_row.pack(fill="x", padx=12, pady=(0, 10))
                     if not paused:
                         ctk.CTkButton(btn_row, text="⏸ Pause", width=90, height=26, corner_radius=13,
                                       fg_color=BG_HOVER, hover_color=BG_CARD2, text_color="#7eb3ff",
@@ -971,22 +1076,62 @@ class AppStoreApp(ctk.CTk):
                                   command=lambda t=task: self._cancel_task(t)).pack(side="left", padx=(0, 6))
 
                 elif status == "Completed":
-                    name = app.get("name", "")
                     install_path = os.path.join(INSTALL_BASE, name)
+                    still_installed = self.db.is_installed(full_name)
                     launch_script = os.path.join(install_path, "launch.sh")
 
-                    if os.path.exists(launch_script):
+                    if still_installed and os.path.exists(launch_script):
+                        has_buttons = True
+                        btn_row.pack(fill="x", padx=12, pady=(0, 10))
+                        def make_launcher(p=install_path):
+                            def do_launch():
+                                env = os.environ.copy()
+                                env["APPSTORE_USER_INFO"] = USER_INFO_PATH
+                                env["APPSTORE_USER_ID_FILE"] = GITHUB_ID_PATH
+                                subprocess.Popen(["bash", "launch.sh"], cwd=p, env=env)
+                            return do_launch
                         ctk.CTkButton(btn_row, text="▶ Launch", width=90, height=26, corner_radius=13,
                                       fg_color="#1e7e34", hover_color="#155a24",
                                       font=ctk.CTkFont(size=11),
-                                      command=lambda p=install_path: subprocess.Popen(
-                                          ["bash", "launch.sh"], cwd=p)).pack(side="left", padx=(0, 6))
+                                      command=make_launcher()).pack(side="left", padx=(0, 6))
 
-                    ctk.CTkButton(btn_row, text="Uninstall", width=90, height=26, corner_radius=13,
-                                  fg_color="#2a0a0a", hover_color="#4a1010", text_color="#ff6b6b",
-                                  border_width=1, border_color="#5a1a1a", font=ctk.CTkFont(size=11),
-                                  command=lambda a=app, t=task: self._uninstall_from_history(a, t)).pack(
-                        side="left", padx=(0, 6))
+                    if still_installed:
+                        has_buttons = True
+                        if not btn_row.winfo_ismapped():
+                            btn_row.pack(fill="x", padx=12, pady=(0, 10))
+                        ctk.CTkButton(btn_row, text="Uninstall", width=90, height=26, corner_radius=13,
+                                      fg_color="#2a0a0a", hover_color="#4a1010", text_color="#ff6b6b",
+                                      border_width=1, border_color="#5a1a1a", font=ctk.CTkFont(size=11),
+                                      command=lambda a=app, t=task: self._uninstall_from_history(a, t)).pack(
+                            side="left", padx=(0, 6))
+                    else:
+                        has_buttons = True
+                        if not btn_row.winfo_ismapped():
+                            btn_row.pack(fill="x", padx=12, pady=(0, 10))
+                        ctk.CTkButton(btn_row, text="Install", width=90, height=26, corner_radius=13,
+                                      fg_color=self.config_db.get_accent_color(),
+                                      font=ctk.CTkFont(size=11),
+                                      command=lambda a=app: self._enqueue_install(a, is_update=False)).pack(
+                            side="left", padx=(0, 6))
+
+    def _load_dl_icon(self, lbl, source, size, ref_key, is_url):
+        try:
+            cache_key = f"{source}_{size}"
+            if cache_key in self._icon_cache:
+                pil = self._icon_cache[cache_key]
+            else:
+                if is_url:
+                    r = requests.get(source, timeout=5)
+                    r.raise_for_status()
+                    pil = _round_sq_crop(Image.open(BytesIO(r.content)), size)
+                else:
+                    pil = _round_sq_crop(Image.open(source), size)
+                self._icon_cache[cache_key] = pil
+            ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(size, size))
+            self._ctk_img_refs[ref_key] = ctk_img
+            self.after(0, lambda: lbl.configure(image=ctk_img) if lbl.winfo_exists() else None)
+        except Exception:
+            pass
 
     def _pause_task(self, task):
         proc = task.get("proc")
@@ -1046,13 +1191,78 @@ class AppStoreApp(ctk.CTk):
                 subprocess.run(["bash", "uninstall.sh"], cwd=install_path)
             subprocess.run(["rm", "-rf", install_path], check=True)
             self.db.remove(full_name)
-            task["status"] = "Uninstalled"
             self._render_downloads_list()
             if (self._active_view == "detail"
                     and getattr(self, "_current_viewing_fn", None) == full_name):
                 self._refresh_action_area(app)
         except (subprocess.SubprocessError, OSError) as e:
             tk.messagebox.showerror("Uninstall Error", str(e))
+
+    def _save_github_id(self, user_data):
+        try:
+            data = {
+                "id": user_data.get("id"),
+                "login": user_data.get("login"),
+                "saved_at": time.time()
+            }
+            with open(GITHUB_ID_PATH, "w") as f:
+                json.dump(data, f, indent=2)
+            os.chmod(GITHUB_ID_PATH, 0o600)
+        except OSError:
+            pass
+
+    def _load_github_id(self):
+        if not os.path.exists(GITHUB_ID_PATH):
+            return None
+        try:
+            with open(GITHUB_ID_PATH) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def _write_user_info_file(self, user_data):
+        try:
+            info = {
+                "id": user_data.get("id"),
+                "login": user_data.get("login"),
+                "name": user_data.get("name") or user_data.get("login"),
+                "avatar_url": user_data.get("avatar_url", ""),
+                "bio": user_data.get("bio", ""),
+                "email": user_data.get("email", ""),
+                "updated_at": time.time()
+            }
+            with open(USER_INFO_PATH, "w") as f:
+                json.dump(info, f, indent=2)
+            os.chmod(USER_INFO_PATH, 0o644)
+        except OSError:
+            pass
+
+    def _clear_user_info_file(self):
+        try:
+            if os.path.exists(USER_INFO_PATH):
+                os.remove(USER_INFO_PATH)
+        except OSError:
+            pass
+
+    def _verify_and_refresh_user(self):
+        def run():
+            try:
+                user = self.api.get_current_user()
+                if not user:
+                    return
+                id_data = self._load_github_id()
+                if not id_data:
+                    self._save_github_id(user)
+                elif id_data.get("id") != user.get("id"):
+                    self._save_github_id(user)
+
+                self.config_db.set_username(user.get("login"))
+                self.config_db.set_display_name(user.get("name") or user.get("login"))
+                self._write_user_info_file(user)
+            except Exception:
+                pass
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _show_notification(self, message, color="#1e7e34"):
         try:
@@ -2274,6 +2484,7 @@ class AppStoreApp(ctk.CTk):
             "finished": False,
             "error": False,
             "error_msg": "",
+            "queued_at": time.time(),
         }
 
         with self._queue_lock:
@@ -2337,6 +2548,45 @@ class AppStoreApp(ctk.CTk):
         try:
             if task.get("cancelled"):
                 return
+
+            if task.get("is_update") and os.path.exists(install_path):
+                update_script = os.path.join(install_path, "update.sh")
+                if os.path.exists(update_script):
+                    upd("Installing", 0.3)
+                    task["phase"] = "install"
+                    update_proc = subprocess.Popen(
+                        ["bash", "update.sh"], cwd=install_path,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    )
+                    task["proc"] = update_proc
+
+                    def monitor_update():
+                        while task.get("proc") == update_proc and update_proc.poll() is None:
+                            if task.get("paused"):
+                                time.sleep(0.5)
+                                continue
+                            if task["progress"] < 0.95:
+                                self.after(0, lambda: upd("Installing", task["progress"] + 0.02))
+                            time.sleep(0.5)
+
+                    threading.Thread(target=monitor_update, daemon=True).start()
+                    update_proc.wait()
+                    task["proc"] = None
+
+                    if task.get("cancelled"):
+                        return
+
+                    if update_proc.returncode != 0:
+                        err_out = update_proc.stderr.read().decode(errors="replace")[:80] if update_proc.stderr else ""
+                        raise Exception(f"update.sh failed (code {update_proc.returncode}): {err_out}")
+
+                    self.db.add(full_name, name, install_path, pushed_at, app_data=app)
+                    upd("Completed", 1.0, finished=True)
+                    self.after(0, lambda: self._show_notification(f"✓  {name} updated successfully"))
+                    if (self._active_view == "detail"
+                            and getattr(self, "_current_viewing_fn", None) == full_name):
+                        self.after(800, lambda: self._refresh_action_area(app))
+                    return
 
             upd("Cloning", 0.1)
             task["phase"] = "clone"
@@ -2408,9 +2658,13 @@ class AppStoreApp(ctk.CTk):
 
             script = os.path.join(install_path, "install.sh")
             if os.path.exists(script):
+                env = os.environ.copy()
+                env["APPSTORE_USER_INFO"] = USER_INFO_PATH
+                env["APPSTORE_USER_ID_FILE"] = GITHUB_ID_PATH
                 install_proc = subprocess.Popen(
                     ["bash", "install.sh"], cwd=install_path,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    env=env
                 )
                 task["proc"] = install_proc
 
@@ -2474,7 +2728,10 @@ class AppStoreApp(ctk.CTk):
         launch_script = os.path.join(install_path, "launch.sh")
         if os.path.exists(launch_script):
             try:
-                subprocess.Popen(["bash", "launch.sh"], cwd=install_path)
+                env = os.environ.copy()
+                env["APPSTORE_USER_INFO"] = USER_INFO_PATH
+                env["APPSTORE_USER_ID_FILE"] = GITHUB_ID_PATH
+                subprocess.Popen(["bash", "launch.sh"], cwd=install_path, env=env)
             except OSError as e:
                 tk.messagebox.showerror("Launch Error", f"Failed to launch: {e}")
         else:
@@ -2778,6 +3035,7 @@ class AppStoreApp(ctk.CTk):
             return
         self.api.set_token(None)
         self.config_db.clear_token()
+        self._clear_user_info_file()
         self._show_notification("Logged out", color="#1e7e34")
         if self._active_view == "settings":
             self._render_settings_profile()
@@ -2887,6 +3145,10 @@ class AppStoreApp(ctk.CTk):
                     if user:
                         self.config_db.set_username(user.get("login"))
                         self.config_db.set_display_name(user.get("name") or user.get("login"))
+                        id_data = self._load_github_id()
+                        if not id_data or id_data.get("id") != user.get("id"):
+                            self._save_github_id(user)
+                        self._write_user_info_file(user)
                 except Exception:
                     pass
 

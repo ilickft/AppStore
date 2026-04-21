@@ -1,29 +1,19 @@
 #!/bin/bash
 
-# Termux AppStore Installer
-# Targeted for XFCE4 Desktop Environment in Termux
-
 set -e
 
 echo "--- Termux AppStore Installer ---"
 
-# 1. Install System Dependencies
-echo "Installing system dependencies..."
 pkg update
 pkg install -y python python-tkinter p7zip xdg-utils git
 
-# 2. Install Python Dependencies
-echo "Installing python dependencies..."
 pip install -r requirements.txt
 
-# 3. Setup Application Directory
 APP_DIR="/data/data/com.termux/files/home/.local/share/termux-appstore"
 mkdir -p "$APP_DIR"
 cp appstore.py "$APP_DIR/"
 cp icon.png "$APP_DIR/"
 
-# 4. Create Binary Wrapper
-echo "Creating binary wrapper..."
 BIN_PATH="/data/data/com.termux/files/usr/bin/termux-appstore"
 cat <<EOF > "$BIN_PATH"
 #!/bin/bash
@@ -32,8 +22,6 @@ python "$APP_DIR/appstore.py"
 EOF
 chmod +x "$BIN_PATH"
 
-# 5. Create Desktop Entry
-echo "Creating desktop entry..."
 DESKTOP_DIR="/data/data/com.termux/files/home/.local/share/applications"
 mkdir -p "$DESKTOP_DIR"
 cat <<EOF > "$DESKTOP_DIR/termux-appstore.desktop"
@@ -48,8 +36,6 @@ Categories=System;Settings;
 Terminal=false
 EOF
 
-# 6. Update Desktop Database
-echo "Updating desktop database..."
 update-desktop-database "$DESKTOP_DIR" || true
 
 echo "--- Installation Complete! ---"
